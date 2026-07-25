@@ -87,6 +87,6 @@ The program executes the benchmark and prints cache statistics, including:
 
 | Student Number | Name                   |
 |----------------|------------------------|
-| 403105974      | Aynaz Rahmani          |
 | 403105714      | Arash Akbari           |
+| 403105974      | Aynaz Rahmani          |
 | 403106024      | Nafiseh Zarei           |
