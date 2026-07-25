@@ -22,7 +22,7 @@ The benchmark generates conflict-heavy memory accesses to demonstrate how the Vi
 
 ## About Akita
 
-This project is implemented using **Akita**, an event-driven hardware simulation framework written in Go.
+This project is implemented using **[Akita](https://github.com/sarchlab/akita)**, an event-driven hardware simulation framework written in Go.
 
 Akita provides a modular environment for modeling computer architecture components and simulating communication between them. It allows developers to build and evaluate custom hardware designs while keeping components independent and reusable.
 
