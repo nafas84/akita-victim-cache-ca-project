@@ -1,165 +1,482 @@
-package ping
+package main
 
 import (
 	"fmt"
+	"log"
 
+	mem "github.com/sarchlab/akita/v5/mem/memprotocol"
 	"github.com/sarchlab/akita/v5/messaging"
 	"github.com/sarchlab/akita/v5/modeling"
 	"github.com/sarchlab/akita/v5/timing"
 )
 
-// pingReq is a ping request message.
-type pingReq struct {
-	messaging.MsgMeta
-	SeqID int
+// ============================================================================
+// ۱. تنظیمات ثابت (Spec) و ساختار داده بلاک‌ها و وضعیت کش (State)
+// ============================================================================
+
+type CacheSpec struct {
+	Freq      timing.Freq `json:"freq"`
+	Latency   int         `json:"latency"`    // تاخیر دسترسی به کش (مثلا ۱ سیکل)
+	BlockSize int         `json:"block_size"` // ۱۶ بایت
+	NumBlocks int         `json:"num_blocks"` // ۱۶ بلاک
 }
 
-// pingRsp is a ping response message.
-type pingRsp struct {
-	messaging.MsgMeta
-	SeqID int
+var defaultCacheSpec = CacheSpec{
+	Freq:      1 * timing.GHz,
+	Latency:   1,
+	BlockSize: 16,
+	NumBlocks: 16,
 }
 
-// pingProcessor implements modeling.EventProcessor[Spec, State, modeling.None].
-type pingProcessor struct{}
-
-// outPort returns the component's internal "Out" port.
-func outPort(
-	comp *modeling.EventDrivenComponent[Spec, State, modeling.None],
-) messaging.Port {
-	return comp.GetPortByName("Out")
+func DefaultCacheSpec() CacheSpec {
+	return defaultCacheSpec
 }
 
-// Process handles all ping logic: sending scheduled pings, delivering
-// matured responses, and processing incoming messages.
-// SOS
-func (p *pingProcessor) Process(
-	comp *modeling.EventDrivenComponent[Spec, State, modeling.None],
-	now timing.VTimeInPicoSec,
-) bool {
-	progress := false
-	state := &comp.State
-
-	progress = p.sendScheduledPings(comp, state, now) || progress
-	progress = p.deliverPendingResponses(comp, state, now) || progress
-	progress = p.processIncoming(comp, state, now) || progress
-
-	return progress
+type CacheBlock struct {
+	Tag   uint64 `json:"tag"`
+	Valid bool   `json:"valid"`
+	Data  []byte `json:"data"`
 }
 
-func (p *pingProcessor) sendScheduledPings(
-	comp *modeling.EventDrivenComponent[Spec, State, modeling.None],
-	state *State,
-	now timing.VTimeInPicoSec,
-) bool {
-	progress := false
-	remaining := make([]scheduledPing, 0, len(state.ScheduledPings))
+type topTransaction struct {
+	IsWrite        bool                 `json:"is_write"`
+	Address        uint64               `json:"address"`
+	AccessByteSize uint64               `json:"access_byte_size"`
+	Data           []byte               `json:"data"`
+	DirtyMask      []bool               `json:"dirty_mask"`
+	ReqID          uint64               `json:"req_id"`
+	ReqSrc         messaging.RemotePort `json:"req_src"`
+	CycleLeft      int                  `json:"cycle_left"`
+}
 
-	for _, sp := range state.ScheduledPings {
-		if sp.SendAt > now {
-			remaining = append(remaining, sp)
-			comp.ScheduleWakeAt(sp.SendAt)
-			continue
-		}
+type pendingMissOrWrite struct {
+	BottomReqID    uint64               `json:"bottom_req_id"`
+	IsWrite        bool                 `json:"is_write"`
+	OrigAddress    uint64               `json:"orig_address"`
+	AccessByteSize uint64               `json:"access_byte_size"`
+	OrigReqID      uint64               `json:"orig_req_id"`
+	OrigReqSrc     messaging.RemotePort `json:"orig_req_src"`
+}
 
-		if !outPort(comp).CanSend() {
-			remaining = append(remaining, sp)
-			continue
-		}
+type CacheState struct {
+	Blocks          []CacheBlock         `json:"-"`
+	TopTransactions []topTransaction     `json:"-"`
+	PendingBottom   []pendingMissOrWrite `json:"-"`
+	LowModule       messaging.RemotePort `json:"-"`
 
-		pingMsg := pingReq{
-			MsgMeta: messaging.MsgMeta{
-				ID:  timing.GetIDGenerator().Generate(),
-				Src: outPort(comp).AsRemote(),
-				Dst: sp.Dst,
-			},
-			SeqID: state.NextSeqID,
-		}
+	ReadHits        uint64 `json:"read_hits"`
+	ReadMisses      uint64 `json:"read_misses"`
+	WriteHits       uint64 `json:"write_hits"`
+	WriteMisses     uint64 `json:"write_misses"`
+	BottomSendCount uint64 `json:"bottom_send_count"`
+}
 
-		outPort(comp).Send(pingMsg)
+type Cache = modeling.Component[CacheSpec, CacheState, modeling.None]
 
-		state.StartTimes = append(state.StartTimes, now)
-		state.NextSeqID++
-		progress = true
+// ============================================================================
+// ۲. الگوی Builder برای ساخت کامپوننت کش
+// ============================================================================
+
+type CacheBuilder struct {
+	spec      CacheSpec
+	registrar modeling.Registrar
+}
+
+func MakeCacheBuilder() CacheBuilder {
+	return CacheBuilder{spec: defaultCacheSpec}
+}
+
+func (b CacheBuilder) WithRegistrar(reg modeling.Registrar) CacheBuilder {
+	b.registrar = reg
+	return b
+}
+
+func (b CacheBuilder) WithSpec(spec CacheSpec) CacheBuilder {
+	b.spec = spec
+	return b
+}
+
+func (b CacheBuilder) Build(name string) *Cache {
+	if b.registrar == nil {
+		panic("Cache: WithRegistrar is required")
 	}
 
-	state.ScheduledPings = remaining
+	comp := modeling.NewBuilder[CacheSpec, CacheState, modeling.None]().
+		WithEngine(b.registrar.GetEngine()).
+		WithFreq(b.spec.Freq).
+		WithSpec(b.spec).
+		Build(name)
 
-	return progress
+	blocks := make([]CacheBlock, b.spec.NumBlocks)
+	for i := range blocks {
+		blocks[i].Data = make([]byte, b.spec.BlockSize)
+	}
+
+	comp.State = CacheState{
+		Blocks:          blocks,
+		TopTransactions: make([]topTransaction, 0),
+		PendingBottom:   make([]pendingMissOrWrite, 0),
+	}
+
+	comp.AddMiddleware(&cacheBottomProcessMW{comp: comp})
+	comp.AddMiddleware(&cacheTopProcessMW{comp: comp})
+	comp.AddMiddleware(&cacheTopReceiveMW{comp: comp})
+
+	// تعریف و تخصیص همزمان بافر پورت‌های TopPort و BottomPort
+	comp.DeclarePort("TopPort")
+	topPort := modeling.MakePortBuilder().
+		WithRegistrar(b.registrar).
+		WithComponent(comp).
+		WithSpec(modeling.PortSpec{BufSize: 16}).
+		Build("TopPort")
+	comp.AssignPort("TopPort", topPort)
+
+	comp.DeclarePort("BottomPort")
+	bottomPort := modeling.MakePortBuilder().
+		WithRegistrar(b.registrar).
+		WithComponent(comp).
+		WithSpec(modeling.PortSpec{BufSize: 16}).
+		Build("BottomPort")
+	comp.AssignPort("BottomPort", bottomPort)
+
+	b.registrar.RegisterComponent(comp)
+	return comp
 }
 
-func (p *pingProcessor) deliverPendingResponses(
-	comp *modeling.EventDrivenComponent[Spec, State, modeling.None],
-	state *State,
-	now timing.VTimeInPicoSec,
-) bool {
-	progress := false
-	remaining := make([]pendingResponse, 0, len(state.PendingResponses))
+func cacheTopPort(comp *Cache) messaging.Port {
+	return comp.GetPortByName("TopPort")
+}
 
-	for _, pr := range state.PendingResponses {
-		if pr.DeliverAt > now {
-			remaining = append(remaining, pr)
-			comp.ScheduleWakeAt(pr.DeliverAt)
-			continue
+func cacheBottomPort(comp *Cache) messaging.Port {
+	return comp.GetPortByName("BottomPort")
+}
+
+func decodeAddress(addr uint64) (tag, index, offset uint64) {
+	offset = addr & 0xF
+	index = (addr >> 4) & 0xF
+	tag = addr >> 8
+	return
+}
+
+// ============================================================================
+// ۳. Middleware دریافت از TopPort و شمارش معکوس تاخیر (Receive & Countdown)
+// ============================================================================
+
+type cacheTopReceiveMW struct {
+	comp *Cache
+}
+
+func (m *cacheTopReceiveMW) Tick() bool {
+	madeProgress := false
+	madeProgress = m.countDown() || madeProgress
+	madeProgress = m.processInput() || madeProgress
+	return madeProgress
+}
+
+func (m *cacheTopReceiveMW) countDown() bool {
+	state := &m.comp.State
+	madeProgress := false
+
+	for i := range state.TopTransactions {
+		if state.TopTransactions[i].CycleLeft > 0 {
+			state.TopTransactions[i].CycleLeft--
+			madeProgress = true
 		}
+	}
+	return madeProgress
+}
 
-		if !outPort(comp).CanSend() {
-			remaining = append(remaining, pr)
-			continue
+func (m *cacheTopReceiveMW) processInput() bool {
+	msgI := cacheTopPort(m.comp).PeekIncoming()
+	if msgI == nil {
+		return false
+	}
+
+	state := &m.comp.State
+	spec := m.comp.Spec()
+
+	switch msg := msgI.(type) {
+	case *mem.ReadReq:
+		trans := topTransaction{
+			IsWrite:        false,
+			Address:        msg.Address,
+			AccessByteSize: msg.AccessByteSize,
+			ReqID:          msg.ID,
+			ReqSrc:         msg.Src,
+			CycleLeft:      spec.Latency,
 		}
+		state.TopTransactions = append(state.TopTransactions, trans)
+		cacheTopPort(m.comp).RetrieveIncoming()
+		return true
+	case *mem.WriteReq:
+		trans := topTransaction{
+			IsWrite:   true,
+			Address:   msg.Address,
+			Data:      msg.Data,
+			DirtyMask: msg.DirtyMask,
+			ReqID:     msg.ID,
+			ReqSrc:    msg.Src,
+			CycleLeft: spec.Latency,
+		}
+		state.TopTransactions = append(state.TopTransactions, trans)
+		cacheTopPort(m.comp).RetrieveIncoming()
+		return true
+	default:
+		log.Panicf("پیام ناشناخته در TopPort کش: %T", msgI)
+	}
+	return false
+}
 
-		rsp := pingRsp{
+// ============================================================================
+// ۴. Middleware پردازش درخواست‌های پردازنده (Hit / Miss Logic)
+// ============================================================================
+
+type cacheTopProcessMW struct {
+	comp *Cache
+}
+
+func (m *cacheTopProcessMW) Tick() bool {
+	state := &m.comp.State
+
+	if len(state.TopTransactions) == 0 {
+		return false
+	}
+	trans := state.TopTransactions[0]
+	if trans.CycleLeft > 0 {
+		return false
+	}
+
+	if trans.IsWrite {
+		if m.handleWrite(trans) {
+			state.TopTransactions = state.TopTransactions[1:]
+			return true
+		}
+	} else {
+		if m.handleRead(trans) {
+			state.TopTransactions = state.TopTransactions[1:]
+			return true
+		}
+	}
+	return false
+}
+
+func (m *cacheTopProcessMW) handleRead(trans topTransaction) bool {
+	state := &m.comp.State
+	tag, index, offset := decodeAddress(trans.Address)
+	block := &state.Blocks[index]
+
+	if block.Valid && block.Tag == tag {
+		if !cacheTopPort(m.comp).CanSend() {
+			return false
+		}
+		state.ReadHits++
+
+		data := make([]byte, trans.AccessByteSize)
+		copy(data, block.Data[offset:offset+trans.AccessByteSize])
+
+		rsp := &mem.DataReadyRsp{
 			MsgMeta: messaging.MsgMeta{
 				ID:    timing.GetIDGenerator().Generate(),
-				Src:   outPort(comp).AsRemote(),
-				Dst:   pr.Dst,
-				RspTo: pr.OrigMsgID,
+				Src:   cacheTopPort(m.comp).AsRemote(),
+				Dst:   trans.ReqSrc,
+				RspTo: trans.ReqID,
 			},
-			SeqID: pr.SeqID,
+			Data: data,
 		}
-
-		outPort(comp).Send(rsp)
-		progress = true
+		cacheTopPort(m.comp).Send(rsp)
+		return true
 	}
 
-	state.PendingResponses = remaining
+	if !cacheBottomPort(m.comp).CanSend() {
+		return false
+	}
+	state.ReadMisses++
+	state.BottomSendCount++
 
-	return progress
+	alignedAddr := trans.Address &^ 0xF
+
+	bottomReq := &mem.ReadReq{
+		MsgMeta: messaging.MsgMeta{
+			ID:  timing.GetIDGenerator().Generate(),
+			Src: cacheBottomPort(m.comp).AsRemote(),
+			Dst: state.LowModule,
+		},
+		Address:        alignedAddr,
+		AccessByteSize: 16,
+	}
+
+	cacheBottomPort(m.comp).Send(bottomReq)
+	state.PendingBottom = append(state.PendingBottom, pendingMissOrWrite{
+		BottomReqID:    bottomReq.ID,
+		IsWrite:        false,
+		OrigAddress:    trans.Address,
+		AccessByteSize: trans.AccessByteSize,
+		OrigReqID:      trans.ReqID,
+		OrigReqSrc:     trans.ReqSrc,
+	})
+	return true
 }
 
-func (p *pingProcessor) processIncoming(
-	comp *modeling.EventDrivenComponent[Spec, State, modeling.None],
-	state *State,
-	now timing.VTimeInPicoSec,
-) bool {
-	progress := false
+func (m *cacheTopProcessMW) handleWrite(trans topTransaction) bool {
+	state := &m.comp.State
+	tag, index, offset := decodeAddress(trans.Address)
+	block := &state.Blocks[index]
 
-	for {
-		msg := outPort(comp).RetrieveIncoming()
-		if msg == nil {
-			break
-		}
-
-		switch m := msg.(type) {
-		case pingReq:
-			state.PendingResponses = append(state.PendingResponses,
-				pendingResponse{
-					DeliverAt: now + 2_000_000_000_000,
-					Dst:       m.Src,
-					OrigMsgID: m.Meta().ID,
-					SeqID:     m.SeqID,
-				})
-			comp.ScheduleWakeAt(now + 2_000_000_000_000)
-			progress = true
-		case pingRsp:
-			seqID := m.SeqID
-			startTime := state.StartTimes[seqID]
-			duration := now - startTime
-
-			fmt.Printf("Ping %d, %d ps\n", seqID, duration)
-			progress = true
-		}
+	if !cacheBottomPort(m.comp).CanSend() {
+		return false
 	}
 
-	return progress
+	if block.Valid && block.Tag == tag {
+		state.WriteHits++
+		for i := 0; i < len(trans.Data); i++ {
+			if trans.DirtyMask == nil || trans.DirtyMask[i] {
+				block.Data[int(offset)+i] = trans.Data[i]
+			}
+		}
+	} else {
+		state.WriteMisses++
+	}
+
+	state.BottomSendCount++
+
+	bottomReq := &mem.WriteReq{
+		MsgMeta: messaging.MsgMeta{
+			ID:  timing.GetIDGenerator().Generate(),
+			Src: cacheBottomPort(m.comp).AsRemote(),
+			Dst: state.LowModule,
+		},
+		Address:   trans.Address,
+		Data:      trans.Data,
+		DirtyMask: trans.DirtyMask,
+	}
+
+	cacheBottomPort(m.comp).Send(bottomReq)
+	state.PendingBottom = append(state.PendingBottom, pendingMissOrWrite{
+		BottomReqID: bottomReq.ID,
+		IsWrite:     true,
+		OrigReqID:   trans.ReqID,
+		OrigReqSrc:  trans.ReqSrc,
+	})
+	return true
+}
+
+// ============================================================================
+// ۵. Middleware دریافت پاسخ از BottomPort و به‌روزرسانی کش (Bottom Process)
+// ============================================================================
+
+type cacheBottomProcessMW struct {
+	comp *Cache
+}
+
+func (m *cacheBottomProcessMW) Tick() bool {
+	msgI := cacheBottomPort(m.comp).PeekIncoming()
+	if msgI == nil {
+		return false
+	}
+
+	state := &m.comp.State
+
+	switch rsp := msgI.(type) {
+	case *mem.DataReadyRsp:
+		return m.handleDataReady(rsp, state)
+	case *mem.WriteDoneRsp:
+		return m.handleWriteDone(rsp, state)
+	default:
+		log.Panicf("پیام ناشناخته در BottomPort کش: %T", msgI)
+	}
+	return false
+}
+
+func (m *cacheBottomProcessMW) handleDataReady(rsp *mem.DataReadyRsp, state *CacheState) bool {
+	idx := -1
+	for i, p := range state.PendingBottom {
+		if p.BottomReqID == rsp.RspTo {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		log.Panicf("پاسخ خواندن از پایین بدون درخواست اولیه دریافت شد: %d", rsp.RspTo)
+	}
+
+	pending := state.PendingBottom[idx]
+
+	if !cacheTopPort(m.comp).CanSend() {
+		return false
+	}
+
+	tag, index, offset := decodeAddress(pending.OrigAddress)
+	block := &state.Blocks[index]
+	block.Valid = true
+	block.Tag = tag
+	copy(block.Data, rsp.Data)
+
+	data := make([]byte, pending.AccessByteSize)
+	copy(data, block.Data[offset:offset+pending.AccessByteSize])
+
+	topRsp := &mem.DataReadyRsp{
+		MsgMeta: messaging.MsgMeta{
+			ID:    timing.GetIDGenerator().Generate(),
+			Src:   cacheTopPort(m.comp).AsRemote(),
+			Dst:   pending.OrigReqSrc,
+			RspTo: pending.OrigReqID,
+		},
+		Data: data,
+	}
+
+	cacheTopPort(m.comp).Send(topRsp)
+	state.PendingBottom = append(state.PendingBottom[:idx], state.PendingBottom[idx+1:]...)
+	cacheBottomPort(m.comp).RetrieveIncoming()
+	return true
+}
+
+func (m *cacheBottomProcessMW) handleWriteDone(rsp *mem.WriteDoneRsp, state *CacheState) bool {
+	idx := -1
+	for i, p := range state.PendingBottom {
+		if p.BottomReqID == rsp.RspTo {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		log.Panicf("پاسخ نوشتن از پایین بدون درخواست اولیه دریافت شد: %d", rsp.RspTo)
+	}
+
+	pending := state.PendingBottom[idx]
+
+	if !cacheTopPort(m.comp).CanSend() {
+		return false
+	}
+
+	topRsp := &mem.WriteDoneRsp{
+		MsgMeta: messaging.MsgMeta{
+			ID:    timing.GetIDGenerator().Generate(),
+			Src:   cacheTopPort(m.comp).AsRemote(),
+			Dst:   pending.OrigReqSrc,
+			RspTo: pending.OrigReqID,
+		},
+	}
+
+	cacheTopPort(m.comp).Send(topRsp)
+	state.PendingBottom = append(state.PendingBottom[:idx], state.PendingBottom[idx+1:]...)
+	cacheBottomPort(m.comp).RetrieveIncoming()
+	return true
+}
+
+func PrintCacheStats(c *Cache) {
+	state := &c.State
+	fmt.Println("=====================================")
+	fmt.Println("         L1 CACHE STATISTICS         ")
+	fmt.Println("=====================================")
+	fmt.Printf("Read Hits:        %d\n", state.ReadHits)
+	fmt.Printf("Read Misses:      %d\n", state.ReadMisses)
+	fmt.Printf("Write Hits:       %d\n", state.WriteHits)
+	fmt.Printf("Write Misses:     %d\n", state.WriteMisses)
+	totalRequests := state.ReadHits + state.ReadMisses + state.WriteHits + state.WriteMisses
+	if totalRequests > 0 {
+		hitRate := float64(state.ReadHits+state.WriteHits) / float64(totalRequests) * 100
+		fmt.Printf("Overall Hit Rate: %.2f%%\n", hitRate)
+	}
+	fmt.Printf("Traffic to Lower Memory: %d reqs\n", state.BottomSendCount)
+	fmt.Println("=====================================")
 }
