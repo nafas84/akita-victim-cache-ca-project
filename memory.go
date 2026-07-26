@@ -10,20 +10,16 @@ import (
 	"github.com/sarchlab/akita/v5/timing"
 )
 
-// ============================================================================
-// ۱. تنظیمات ثابت (Spec) و وضعیت در حال اجرا (State)
-// ============================================================================
-
 type Spec struct {
 	Freq     timing.Freq `json:"freq"`
-	Capacity uint64      `json:"capacity"` // ظرفیت: 2^16 = 65536 بایت
-	Latency  int         `json:"latency"`  // تاخیر دسترسی به تعداد سیکل کلاک
+	Capacity uint64      `json:"capacity"` // capacity: 2^16 = 65536 byte
+	Latency  int         `json:"latency"`
 }
 
 var defaultMemSpec = Spec{
 	Freq:     1 * timing.GHz,
 	Capacity: 65536, // 64 KB
-	Latency:  100,   // 100 سیکل تاخیر پیش‌فرض
+	Latency:  100,   // 100 
 }
 
 func DefaultMemSpec() Spec {
@@ -42,16 +38,13 @@ type memTransaction struct {
 }
 
 type State struct {
-	Data         []byte           `json:"-"` // آرایه ۶۴ کیلوبایتی حافظه
+	Data         []byte           `json:"-"` // 64KB
 	Transactions []memTransaction `json:"transactions"`
 }
 
 type Memory = modeling.Component[Spec, State, modeling.None]
 
-// ============================================================================
-// ۲. الگوی Builder برای ساخت کامپوننت حافظه
-// ============================================================================
-
+// Builder
 type MemoryBuilder struct {
 	spec      Spec
 	registrar modeling.Registrar
@@ -90,7 +83,6 @@ func (b MemoryBuilder) Build(name string) *Memory {
 	comp.AddMiddleware(&memSendMW{comp: comp})
 	comp.AddMiddleware(&memReceiveProcessMW{comp: comp})
 
-	// تعریف و تخصیص همزمان بافر پورت بالایی
 	comp.DeclarePort("TopPort")
 	topPort := modeling.MakePortBuilder().
 		WithRegistrar(b.registrar).
@@ -107,10 +99,7 @@ func memTopPort(comp *Memory) messaging.Port {
 	return comp.GetPortByName("TopPort")
 }
 
-// ============================================================================
-// ۳. Middleware دریافت پیام و کاهش تاخیر (Receive & Countdown)
-// ============================================================================
-
+// Middleware (Receive, Countdown)
 type memReceiveProcessMW struct {
 	comp *Memory
 }
@@ -176,10 +165,7 @@ func (m *memReceiveProcessMW) processInput() bool {
 	return false
 }
 
-// ============================================================================
-// ۴. Middleware انجام کار و ارسال پاسخ (Send Response)
-// ============================================================================
-
+// Middleware (send response)
 type memSendMW struct {
 	comp *Memory
 }
@@ -214,7 +200,7 @@ func (m *memSendMW) handleRead(trans memTransaction) {
 	spec := m.comp.Spec()
 
 	if trans.Address+trans.AccessByteSize > spec.Capacity {
-		log.Panicf("خطای Out of Bounds: آدرس %d خارج از ظرفیت حافظه است.", trans.Address)
+		log.Panicf("Ahhh hell nahhhhhhhhhhhhhh %d", trans.Address)
 	}
 
 	data := make([]byte, trans.AccessByteSize)
@@ -240,7 +226,7 @@ func (m *memSendMW) handleWrite(trans memTransaction) {
 	spec := m.comp.Spec()
 
 	if trans.Address+uint64(len(trans.Data)) > spec.Capacity {
-		log.Panicf("خطای Out of Bounds: آدرس %d خارج از ظرفیت حافظه است.", trans.Address)
+		log.Panicf("Ahhh hell nahhhhhhhhhhhhhh %d", trans.Address)
 	}
 
 	for i := 0; i < len(trans.Data); i++ {

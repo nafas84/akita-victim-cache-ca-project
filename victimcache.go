@@ -11,44 +11,36 @@ import (
 	"github.com/sarchlab/akita/v5/timing"
 )
 
-// ============================================================================
-// ۱. تعریف پیام اخراج از L1 به Victim Cache (Eviction Message)
-// ============================================================================
-
+// Eviction Message
 type EvictToVCReq struct {
 	messaging.MsgMeta
 	Address uint64
 	Data    []byte
 }
 
-// ============================================================================
-// ۲. تنظیمات ثابت (Spec) و ساختار بافر ۸ بلاکی و وضعیت (State)
-// ============================================================================
-
 type VCSpec struct {
 	Freq      timing.Freq `json:"freq"`
-	Latency   int         `json:"latency"`    // تاخیر دسترسی بسیار سریع (مثلا ۲ سیکل)
-	BlockSize int         `json:"block_size"` // ۱۶ بایت
-	NumBlocks int         `json:"num_blocks"` // ۸ بلاک (تمام انجمنی)
+	Latency   int         `json:"latency"`   
+	BlockSize int         `json:"block_size"` // 16 byte
+	NumBlocks int         `json:"num_blocks"` // 8 Block Fully Associative
 }
 
 var defaultVCSpec = VCSpec{
 	Freq:      1 * timing.GHz,
 	Latency:   2,
 	BlockSize: 16,
-	NumBlocks: 8, // تضمین ظرفیت ۸ بلاک
+	NumBlocks: 8,
 }
 
 func DefaultVCSpec() VCSpec {
 	return defaultVCSpec
 }
 
-// VCBlock ساختار یک خط در ویکتیم کش (Fully Associative -> Tag آدرس کامل بلاک است)
 type VCBlock struct {
 	Tag            uint64 `json:"tag"`
 	Valid          bool   `json:"valid"`
 	Data           []byte `json:"data"`
-	LastAccessTime uint64 `json:"last_access_time"` // برای پیاده‌سازی LRU
+	LastAccessTime uint64 `json:"last_access_time"` // LRU
 }
 
 type vcTopTransaction struct {
@@ -87,10 +79,7 @@ type VCState struct {
 
 type VictimCache = modeling.Component[VCSpec, VCState, modeling.None]
 
-// ============================================================================
-// ۳. الگوی Builder برای ساخت کامپوننت Victim Cache
-// ============================================================================
-
+// Builder
 type VCBuilder struct {
 	spec      VCSpec
 	registrar modeling.Registrar
@@ -164,10 +153,7 @@ func vcBottomPort(comp *VictimCache) messaging.Port {
 	return comp.GetPortByName("BottomPort")
 }
 
-// ============================================================================
-// ۴. Middleware دریافت پیام از TopPort (از سمت L1 Cache)
-// ============================================================================
-
+// Middleware TopPort
 type vcTopReceiveMW struct {
 	comp *VictimCache
 }
@@ -237,15 +223,12 @@ func (m *vcTopReceiveMW) processInput() bool {
 		vcTopPort(m.comp).RetrieveIncoming()
 		return true
 	default:
-		log.Panicf("پیام ناشناخته در TopPort ویکتیم کش: %T", msgI)
+		log.Panicf("error top port%T", msgI)
 	}
 	return false
 }
 
-// ============================================================================
-// ۵. Middleware پردازش منطق ویکتیم کش (LRU Replacement & Hit/Miss Logic)
-// ============================================================================
-
+// Middleware (LRU Remplacement (Hit, Miss))
 type vcTopProcessMW struct {
 	comp *VictimCache
 }
@@ -323,7 +306,7 @@ func (m *vcTopProcessMW) handleRead(trans vcTopTransaction) bool {
 	alignedAddr := trans.Address &^ 0xF
 	now := uint64(m.comp.CurrentTime())
 
-	// نگاشت تمام‌انجمنی (Fully Associative): بررسی کل بافر بدون شاخص مجموعه
+	// Fully Associative
 	for i := range state.Blocks {
 		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
 			if !vcTopPort(m.comp).CanSend() {
@@ -402,7 +385,7 @@ func (m *vcTopProcessMW) handleWrite(trans vcTopTransaction) bool {
 
 	state.BottomSendCount++
 
-	// سیاست Write-Through: ارسال مستقیم و بدون تاخیر نوشتن به سطح حافظه پایینی
+	// Write-Through
 	bottomReq := &mem.WriteReq{
 		MsgMeta: messaging.MsgMeta{
 			ID:  timing.GetIDGenerator().Generate(),
@@ -424,10 +407,7 @@ func (m *vcTopProcessMW) handleWrite(trans vcTopTransaction) bool {
 	return true
 }
 
-// ============================================================================
-// ۶. Middleware دریافت پاسخ از BottomPort و هدایت به سمت L1
-// ============================================================================
-
+// Middleware BottomPort 
 type vcBottomProcessMW struct {
 	comp *VictimCache
 }
@@ -445,7 +425,7 @@ func (m *vcBottomProcessMW) Tick() bool {
 	case *mem.WriteDoneRsp:
 		return m.handleWriteDone(rsp, state)
 	default:
-		log.Panicf("پیام ناشناخته در BottomPort ویکتیم کش: %T", msgI)
+		log.Panicf("error bottom port %T", msgI)
 	}
 	return false
 }
@@ -459,7 +439,7 @@ func (m *vcBottomProcessMW) handleDataReady(rsp *mem.DataReadyRsp, state *VCStat
 		}
 	}
 	if idx == -1 {
-		log.Panicf("پاسخ خواندن در VC بدون درخواست اولیه: %d", rsp.RspTo)
+		log.Panicf("read without request %d", rsp.RspTo)
 	}
 	pending := state.PendingBottom[idx]
 
@@ -496,7 +476,7 @@ func (m *vcBottomProcessMW) handleWriteDone(rsp *mem.WriteDoneRsp, state *VCStat
 		}
 	}
 	if idx == -1 {
-		log.Panicf("پاسخ نوشتن در VC بدون درخواست اولیه: %d", rsp.RspTo)
+		log.Panicf("read without request %d", rsp.RspTo)
 	}
 	pending := state.PendingBottom[idx]
 

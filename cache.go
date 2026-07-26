@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 
 	mem "github.com/sarchlab/akita/v5/mem/memprotocol"
@@ -10,15 +9,11 @@ import (
 	"github.com/sarchlab/akita/v5/timing"
 )
 
-// ============================================================================
-// ۱. تنظیمات ثابت (Spec) و ساختار داده بلاک‌ها و وضعیت کش (State)
-// ============================================================================
-
 type CacheSpec struct {
 	Freq      timing.Freq `json:"freq"`
-	Latency   int         `json:"latency"`    // تاخیر دسترسی به کش (مثلا ۱ سیکل)
-	BlockSize int         `json:"block_size"` // ۱۶ بایت
-	NumBlocks int         `json:"num_blocks"` // ۱۶ بلاک
+	Latency   int         `json:"latency"`
+	BlockSize int         `json:"block_size"`
+	NumBlocks int         `json:"num_blocks"`
 }
 
 var defaultCacheSpec = CacheSpec{
@@ -63,19 +58,18 @@ type CacheState struct {
 	TopTransactions []topTransaction     `json:"-"`
 	PendingBottom   []pendingMissOrWrite `json:"-"`
 	LowModule       messaging.RemotePort `json:"-"`
+	HasVC           bool                 `json:"has_vc"` // phase 1,2
 
 	ReadHits        uint64 `json:"read_hits"`
 	ReadMisses      uint64 `json:"read_misses"`
 	WriteHits       uint64 `json:"write_hits"`
 	WriteMisses     uint64 `json:"write_misses"`
-	BottomSendCount uint64 `json:"bottom_send_count"`
+	
+	BottomReadReqs  uint64 `json:"bottom_read_reqs"`
+	BottomWriteReqs uint64 `json:"bottom_write_reqs"`
 }
 
 type Cache = modeling.Component[CacheSpec, CacheState, modeling.None]
-
-// ============================================================================
-// ۲. الگوی Builder برای ساخت کامپوننت کش
-// ============================================================================
 
 type CacheBuilder struct {
 	spec      CacheSpec
@@ -122,7 +116,6 @@ func (b CacheBuilder) Build(name string) *Cache {
 	comp.AddMiddleware(&cacheTopProcessMW{comp: comp})
 	comp.AddMiddleware(&cacheTopReceiveMW{comp: comp})
 
-	// تعریف و تخصیص همزمان بافر پورت‌های TopPort و BottomPort
 	comp.DeclarePort("TopPort")
 	topPort := modeling.MakePortBuilder().
 		WithRegistrar(b.registrar).
@@ -158,10 +151,6 @@ func decodeAddress(addr uint64) (tag, index, offset uint64) {
 	return
 }
 
-// ============================================================================
-// ۳. Middleware دریافت از TopPort و شمارش معکوس تاخیر (Receive & Countdown)
-// ============================================================================
-
 type cacheTopReceiveMW struct {
 	comp *Cache
 }
@@ -176,7 +165,6 @@ func (m *cacheTopReceiveMW) Tick() bool {
 func (m *cacheTopReceiveMW) countDown() bool {
 	state := &m.comp.State
 	madeProgress := false
-
 	for i := range state.TopTransactions {
 		if state.TopTransactions[i].CycleLeft > 0 {
 			state.TopTransactions[i].CycleLeft--
@@ -222,14 +210,10 @@ func (m *cacheTopReceiveMW) processInput() bool {
 		cacheTopPort(m.comp).RetrieveIncoming()
 		return true
 	default:
-		log.Panicf("پیام ناشناخته در TopPort کش: %T", msgI)
+		log.Panicf("error port top %T", msgI)
 	}
 	return false
 }
-
-// ============================================================================
-// ۴. Middleware پردازش درخواست‌های پردازنده (Hit / Miss Logic)
-// ============================================================================
 
 type cacheTopProcessMW struct {
 	comp *Cache
@@ -237,7 +221,6 @@ type cacheTopProcessMW struct {
 
 func (m *cacheTopProcessMW) Tick() bool {
 	state := &m.comp.State
-
 	if len(state.TopTransactions) == 0 {
 		return false
 	}
@@ -291,7 +274,7 @@ func (m *cacheTopProcessMW) handleRead(trans topTransaction) bool {
 		return false
 	}
 	state.ReadMisses++
-	state.BottomSendCount++
+	state.BottomReadReqs++
 
 	alignedAddr := trans.Address &^ 0xF
 
@@ -337,7 +320,7 @@ func (m *cacheTopProcessMW) handleWrite(trans topTransaction) bool {
 		state.WriteMisses++
 	}
 
-	state.BottomSendCount++
+	state.BottomWriteReqs++
 
 	bottomReq := &mem.WriteReq{
 		MsgMeta: messaging.MsgMeta{
@@ -359,10 +342,6 @@ func (m *cacheTopProcessMW) handleWrite(trans topTransaction) bool {
 	})
 	return true
 }
-
-// ============================================================================
-// ۵. Middleware دریافت پاسخ از BottomPort و به‌روزرسانی کش (Bottom Process)
-// ============================================================================
 
 type cacheBottomProcessMW struct {
 	comp *Cache
@@ -387,6 +366,7 @@ func (m *cacheBottomProcessMW) Tick() bool {
 	return false
 }
 
+// swap
 func (m *cacheBottomProcessMW) handleDataReady(rsp *mem.DataReadyRsp, state *CacheState) bool {
 	idx := -1
 	for i, p := range state.PendingBottom {
@@ -396,17 +376,36 @@ func (m *cacheBottomProcessMW) handleDataReady(rsp *mem.DataReadyRsp, state *Cac
 		}
 	}
 	if idx == -1 {
-		log.Panicf("پاسخ خواندن از پایین بدون درخواست اولیه دریافت شد: %d", rsp.RspTo)
+		log.Panicf("error! %d", rsp.RspTo)
 	}
 
 	pending := state.PendingBottom[idx]
-
-	if !cacheTopPort(m.comp).CanSend() {
-		return false
-	}
-
 	tag, index, offset := decodeAddress(pending.OrigAddress)
 	block := &state.Blocks[index]
+
+	// Downward expulsion is only done if we are in phase 2 (with victim cache)!
+	if block.Valid && state.HasVC {
+		if !cacheTopPort(m.comp).CanSend() || !cacheBottomPort(m.comp).CanSend() {
+			return false // (Deadlock)
+		}
+
+		evictReq := &EvictToVCReq{
+			MsgMeta: messaging.MsgMeta{
+				ID:  timing.GetIDGenerator().Generate(),
+				Src: cacheBottomPort(m.comp).AsRemote(),
+				Dst: state.LowModule,
+			},
+			Address: (block.Tag << 8) | (uint64(index) << 4),
+			Data:    make([]byte, 16),
+		}
+		copy(evictReq.Data, block.Data)
+		cacheBottomPort(m.comp).Send(evictReq)
+	} else {
+		if !cacheTopPort(m.comp).CanSend() {
+			return false
+		}
+	}
+
 	block.Valid = true
 	block.Tag = tag
 	copy(block.Data, rsp.Data)
@@ -439,7 +438,7 @@ func (m *cacheBottomProcessMW) handleWriteDone(rsp *mem.WriteDoneRsp, state *Cac
 		}
 	}
 	if idx == -1 {
-		log.Panicf("پاسخ نوشتن از پایین بدون درخواست اولیه دریافت شد: %d", rsp.RspTo)
+		log.Panicf("error! %d", rsp.RspTo)
 	}
 
 	pending := state.PendingBottom[idx]
@@ -461,22 +460,4 @@ func (m *cacheBottomProcessMW) handleWriteDone(rsp *mem.WriteDoneRsp, state *Cac
 	state.PendingBottom = append(state.PendingBottom[:idx], state.PendingBottom[idx+1:]...)
 	cacheBottomPort(m.comp).RetrieveIncoming()
 	return true
-}
-
-func PrintCacheStats(c *Cache) {
-	state := &c.State
-	fmt.Println("=====================================")
-	fmt.Println("         L1 CACHE STATISTICS         ")
-	fmt.Println("=====================================")
-	fmt.Printf("Read Hits:        %d\n", state.ReadHits)
-	fmt.Printf("Read Misses:      %d\n", state.ReadMisses)
-	fmt.Printf("Write Hits:       %d\n", state.WriteHits)
-	fmt.Printf("Write Misses:     %d\n", state.WriteMisses)
-	totalRequests := state.ReadHits + state.ReadMisses + state.WriteHits + state.WriteMisses
-	if totalRequests > 0 {
-		hitRate := float64(state.ReadHits+state.WriteHits) / float64(totalRequests) * 100
-		fmt.Printf("Overall Hit Rate: %.2f%%\n", hitRate)
-	}
-	fmt.Printf("Traffic to Lower Memory: %d reqs\n", state.BottomSendCount)
-	fmt.Println("=====================================")
 }
