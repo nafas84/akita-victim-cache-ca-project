@@ -146,23 +146,62 @@ func (m *cpuReceiveMW) Tick() bool {
 }
 
 // stride 256
+// func generateBenchmark() []MemoryAccess {
+// 	accesses := make([]MemoryAccess, 0)
+// 	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0000, WriteData: []byte{0x11, 0x11, 0x11, 0x11}})
+// 	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0100, WriteData: []byte{0x22, 0x22, 0x22, 0x22}})
+// 	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0050, WriteData: []byte{0xAA, 0xBB, 0xCC, 0xDD}})
+
+// 	for i := 0; i < 6; i++ {
+// 		accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0000})
+// 		accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0100})
+// 	}
+
+// 	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+// 	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+// 	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+// 	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+// 	return accesses
+// }
+
+
 func generateBenchmark() []MemoryAccess {
-	accesses := make([]MemoryAccess, 0)
-	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0000, WriteData: []byte{0x11, 0x11, 0x11, 0x11}})
-	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0100, WriteData: []byte{0x22, 0x22, 0x22, 0x22}})
-	accesses = append(accesses, MemoryAccess{IsWrite: true, Address: 0x0050, WriteData: []byte{0xAA, 0xBB, 0xCC, 0xDD}})
+    accesses := make([]MemoryAccess, 0)
+    
+    // 1. Warm-up Phase: Write to all addresses to ensure they are in memory
+    addresses := []uint64{0x0000, 0x0100, 0x0200, 0x0050}
+    for _, addr := range addresses {
+        accesses = append(accesses, MemoryAccess{
+            IsWrite:   true,
+            Address:   addr,
+            WriteData: []byte{0xFF, 0xFF, 0xFF, 0xFF},
+        })
+    }
 
-	for i := 0; i < 6; i++ {
-		accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0000})
-		accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0100})
-	}
+    // 2. Main Benchmark Phase: Simulate a mix of reads and writes
+    for i := 0; i < 250; i++ {
+        // Thrashing: These two addresses will fight for the same L1 block
+        accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0000})
+        accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0100})
+        
+        // Locality: Consecutive reads to the same address (Guaranteed L1 Hits)
+        accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+        accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
+        
+        // Occasional Write (Simulating updating a variable in a loop)
+        if i%10 == 0 {
+             accesses = append(accesses, MemoryAccess{
+                 IsWrite: true, 
+                 Address: 0x0200, 
+                 WriteData: []byte{0x01, 0x02, 0x03, 0x04},
+            })
+        }
+    }
 
-	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
-	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
-	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
-	accesses = append(accesses, MemoryAccess{IsWrite: false, Address: 0x0050})
-	return accesses
+    return accesses
 }
+
+
 
 type SimMetrics struct {
 	ExecTime    float64
