@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -20,9 +19,9 @@ type EvictToVCReq struct {
 
 type VCSpec struct {
 	Freq      timing.Freq `json:"freq"`
-	Latency   int         `json:"latency"`   
-	BlockSize int         `json:"block_size"` // 16 byte
-	NumBlocks int         `json:"num_blocks"` // 8 Block Fully Associative
+	Latency   int         `json:"latency"`
+	BlockSize int         `json:"block_size"` // 16 bytes
+	NumBlocks int         `json:"num_blocks"` // 8-block Fully Associative
 }
 
 var defaultVCSpec = VCSpec{
@@ -40,7 +39,7 @@ type VCBlock struct {
 	Tag            uint64 `json:"tag"`
 	Valid          bool   `json:"valid"`
 	Data           []byte `json:"data"`
-	LastAccessTime uint64 `json:"last_access_time"` // LRU
+	LastAccessTime uint64 `json:"last_access_time"` // LRU tracking
 }
 
 type vcTopTransaction struct {
@@ -66,9 +65,9 @@ type vcPendingBottom struct {
 }
 
 type VCState struct {
-	Blocks          []VCBlock          `json:"-"`
-	TopTransactions []vcTopTransaction `json:"-"`
-	PendingBottom   []vcPendingBottom  `json:"-"`
+	Blocks          []VCBlock            `json:"-"`
+	TopTransactions []vcTopTransaction   `json:"-"`
+	PendingBottom   []vcPendingBottom    `json:"-"`
 	LowModule       messaging.RemotePort `json:"-"`
 
 	VCHits          uint64 `json:"vc_hits"`
@@ -153,7 +152,9 @@ func vcBottomPort(comp *VictimCache) messaging.Port {
 	return comp.GetPortByName("BottomPort")
 }
 
-// Middleware TopPort
+// -----------------------------------------------------------------
+// Middleware TopPort Receive
+// -----------------------------------------------------------------
 type vcTopReceiveMW struct {
 	comp *VictimCache
 }
@@ -223,12 +224,14 @@ func (m *vcTopReceiveMW) processInput() bool {
 		vcTopPort(m.comp).RetrieveIncoming()
 		return true
 	default:
-		log.Panicf("error top port%T", msgI)
+		log.Panicf("error top port %T", msgI)
 	}
 	return false
 }
 
-// Middleware (LRU Remplacement (Hit, Miss))
+// -----------------------------------------------------------------
+// Middleware TopPort Process (Exclusive Swap Engine)
+// -----------------------------------------------------------------
 type vcTopProcessMW struct {
 	comp *VictimCache
 }
@@ -268,6 +271,7 @@ func (m *vcTopProcessMW) handleEviction(trans vcTopTransaction) {
 	alignedAddr := trans.Address &^ 0xF
 	now := uint64(m.comp.CurrentTime())
 
+	// 1. If line already exists in VC, update it
 	for i := range state.Blocks {
 		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
 			copy(state.Blocks[i].Data, trans.Data)
@@ -276,6 +280,7 @@ func (m *vcTopProcessMW) handleEviction(trans vcTopTransaction) {
 		}
 	}
 
+	// 2. Place in an invalid/empty slot (e.g. the one freed by a recent VC Hit)
 	for i := range state.Blocks {
 		if !state.Blocks[i].Valid {
 			state.Blocks[i].Valid = true
@@ -286,6 +291,7 @@ func (m *vcTopProcessMW) handleEviction(trans vcTopTransaction) {
 		}
 	}
 
+	// 3. Fallback to LRU replacement if VC is completely full
 	lruIdx := 0
 	minTime := state.Blocks[0].LastAccessTime
 	for i := 1; i < len(state.Blocks); i++ {
@@ -304,16 +310,19 @@ func (m *vcTopProcessMW) handleEviction(trans vcTopTransaction) {
 func (m *vcTopProcessMW) handleRead(trans vcTopTransaction) bool {
 	state := &m.comp.State
 	alignedAddr := trans.Address &^ 0xF
-	now := uint64(m.comp.CurrentTime())
 
-	// Fully Associative
+	// Fully Associative Lookup
 	for i := range state.Blocks {
 		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
 			if !vcTopPort(m.comp).CanSend() {
 				return false
 			}
 			state.VCHits++
-			state.Blocks[i].LastAccessTime = now
+
+			// --- EXCLUSIVE SWAP MECHANISM ---
+			// Invalidate block in VC. Ownership transfers entirely to L1.
+			// L1 will send its evicted block down via EvictToVCReq to fill this slot.
+			state.Blocks[i].Valid = false
 
 			data := make([]byte, trans.AccessByteSize)
 			offset := trans.Address & 0xF
@@ -407,7 +416,9 @@ func (m *vcTopProcessMW) handleWrite(trans vcTopTransaction) bool {
 	return true
 }
 
-// Middleware BottomPort 
+// -----------------------------------------------------------------
+// Middleware BottomPort
+// -----------------------------------------------------------------
 type vcBottomProcessMW struct {
 	comp *VictimCache
 }
