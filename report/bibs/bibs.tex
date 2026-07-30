@@ -1,0 +1,20 @@
+
+% -------------------------------------------------------
+%  Bibliography
+% -------------------------------------------------------
+
+\clearpage
+\phantomsection
+\addcontentsline{toc}{chapter}{مراجع}
+\begin{latin}
+	\baselineskip=.8\baselineskip
+	
+	\makeatletter
+	\def\bibname{\if@RTL مراجع\else References\fi}
+	\makeatother
+	\bibliographystyle{./styles/packages/unsrtabbrv}
+	\bibliography{bibs/full,bibs/refs}
+%	\nocite{*}
+	\show\refname
+	
+\end{latin}
