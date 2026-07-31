@@ -12,6 +12,7 @@ import (
 const (
     HitTime     = 1.0  // cycles
     MissPenalty = 100.0 // cycles
+	VChitPenalty = 5.0
 )
 
 type Access struct {
@@ -42,6 +43,7 @@ type SeqAgent struct {
 	pendingReads  map[string]*mem.ReadReq	
 
 	Cache *writeback.Comp
+	VictimCache *VictimCache
 }
 
 func NewSeqAgent(engine sim.Engine, large bool) *SeqAgent {
@@ -82,15 +84,32 @@ func NewSeqAgent(engine sim.Engine, large bool) *SeqAgent {
     {true, 0x0400},
     {false, 0x0000},
 
-    // Conflict thrashing
-    {true, 0x0800},
-    {false, 0x0000},
-    {true, 0x0C00},
-    {false, 0x0000},
-    {true, 0x1000},
-    {false, 0x0000},
-    {true, 0x1400},
-    {false, 0x0000},
+    // Victim cache friendly pattern
+
+	// Evict 0x0000
+	{true, 0x0400},
+	// Immediately reuse it (VC hit)
+	{false, 0x0000},
+
+	// Evict 0x0040
+	{true, 0x0440},
+	// Immediately reuse it (VC hit)
+	{false, 0x0040},
+
+	// Evict 0x0080
+	{true, 0x0480},
+	// Immediately reuse it (VC hit)
+	{false, 0x0080},
+
+	// Evict 0x00C0
+	{true, 0x04C0},
+	// Immediately reuse it (VC hit)
+	{false, 0x00C0},
+
+	// Evict 0x0100
+	{true, 0x0500},
+	// Immediately reuse it (VC hit)
+	{false, 0x0100},
 
     // Good locality again
     {false, 0x0180},
@@ -201,56 +220,140 @@ func (a *SeqAgent) Tick() bool {
 		fmt.Println()
 		fmt.Println("====================================")
 		fmt.Println("Benchmark Finished Successfully")
-		fmt.Printf("Writes        : %d\n", a.completedWrites)
-		fmt.Printf("Reads         : %d\n", a.completedReads)
-		fmt.Printf("Read Hits     : %d\n", a.Cache.ReadHit)
-		fmt.Printf("Read Misses   : %d\n", a.Cache.ReadMiss)
-		fmt.Printf("Write Hits    : %d\n", a.Cache.WriteHit)
-		fmt.Printf("Write Misses  : %d\n", a.Cache.WriteMiss)
-		fmt.Printf("Evictions     : %d\n", a.Cache.Evictions)
-		fmt.Printf("Write Backs   : %d\n", a.Cache.WriteBack)
 
-		totalReads := a.Cache.ReadHit + a.Cache.ReadMiss
-		if totalReads > 0 {
-			fmt.Printf(
-				"Read Hit Rate : %.2f%%\n",
-				100*float64(a.Cache.ReadHit)/float64(totalReads),
-			)
-		}
+		fmt.Printf("Writes         : %d\n", a.completedWrites)
+		fmt.Printf("Reads          : %d\n", a.completedReads)
 
-		totalWrites := a.Cache.WriteHit + a.Cache.WriteMiss
-		if totalWrites > 0 {
-			fmt.Printf(
-				"Write Hit Rate: %.2f%%\n",
-				100*float64(a.Cache.WriteHit)/float64(totalWrites),
-			)
-		}
+		fmt.Println()
+
+		fmt.Println("L1 Cache")
+		fmt.Printf("  Read Hits    : %d\n", a.Cache.ReadHit)
+		fmt.Printf("  Read Misses  : %d\n", a.Cache.ReadMiss)
+		fmt.Printf("  Write Hits   : %d\n", a.Cache.WriteHit)
+		fmt.Printf("  Write Misses : %d\n", a.Cache.WriteMiss)
+
+		fmt.Printf("  Evictions    : %d\n", a.Cache.Evictions)
+		fmt.Printf("  WriteBacks   : %d\n", a.Cache.WriteBack)
 
 		readTotal := a.Cache.ReadHit + a.Cache.ReadMiss
 		if readTotal > 0 {
-			readMissRate := float64(a.Cache.ReadMiss) / float64(readTotal)
-			readAMAT := HitTime + readMissRate*MissPenalty
-
-			fmt.Printf("Read AMAT    : %.2f cycles\n", readAMAT)
-		}	
-
+			fmt.Printf(
+				"  Read Hit Rate : %.2f%%\n",
+				100*float64(a.Cache.ReadHit)/float64(readTotal),
+			)
+		}
 
 		writeTotal := a.Cache.WriteHit + a.Cache.WriteMiss
 		if writeTotal > 0 {
-			writeMissRate := float64(a.Cache.WriteMiss) / float64(writeTotal)
-			writeAMAT := HitTime + writeMissRate*MissPenalty
-
-			fmt.Printf("Write AMAT   : %.2f cycles\n", writeAMAT)
+			fmt.Printf(
+				"  Write Hit Rate: %.2f%%\n",
+				100*float64(a.Cache.WriteHit)/float64(writeTotal),
+			)
 		}
 
-		totalAccesses := readTotal + writeTotal
-		totalMisses := a.Cache.ReadMiss + a.Cache.WriteMiss
+		fmt.Println()
 
-		if totalAccesses > 0 {
-			missRate := float64(totalMisses) / float64(totalAccesses)
-			amat := HitTime + missRate*MissPenalty
+		if a.VictimCache != nil {
 
-			fmt.Printf("Overall AMAT : %.2f cycles\n", amat)
+			vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
+			vcMisses := a.Cache.ReadMiss - a.VictimCache.VCHits
+			fmt.Println("Victim Cache")
+			fmt.Printf("  Hits         : %d\n", a.VictimCache.VCHits)
+			fmt.Printf("  Misses       : %d\n", vcMisses)
+
+			if vcTotal > 0 {
+				fmt.Printf(
+					"  Hit Rate     : %.2f%%\n",
+					100*float64(a.VictimCache.VCHits + a.Cache.ReadHit)/float64(readTotal),
+				)
+			}
+
+			fmt.Printf(
+				"  Memory Traffic : %d requests\n",
+				a.VictimCache.BottomSendCount,
+			)
+
+		} else {
+
+			fmt.Println("Victim Cache")
+			fmt.Println("  Hits         : N/A")
+			fmt.Println("  Misses       : N/A")
+			fmt.Println("  Hit Rate     : N/A")
+			fmt.Println("  Memory Traffic : N/A")
+		}
+
+		fmt.Println()
+
+		// -------------------------
+		// AMAT
+		// -------------------------
+
+		if readTotal > 0 {
+
+			l1MissRate := float64(a.Cache.ReadMiss) / float64(readTotal)
+			
+			if a.VictimCache != nil {
+
+				vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
+
+				var vcHitRate float64
+				var vcMissRate float64
+
+				if vcTotal > 0 {
+					vcHitRate = float64(a.VictimCache.VCHits) / float64(vcTotal)
+					vcMissRate = float64(a.VictimCache.VCMisses) / float64(vcTotal)
+				}
+
+				const VCHitPenalty = 5.0
+				const L2Penalty = MissPenalty
+
+				readAMAT :=
+					HitTime +
+						l1MissRate*(
+						vcHitRate*VCHitPenalty +
+							vcMissRate*L2Penalty)
+
+				fmt.Printf("Read AMAT     : %.2f cycles\n", readAMAT)
+
+			} else {
+
+				readAMAT := HitTime + l1MissRate*MissPenalty
+				fmt.Printf("Read AMAT     : %.2f cycles\n", readAMAT)
+			}
+		}
+
+		if writeTotal > 0 {
+
+			l1MissRate := float64(a.Cache.WriteMiss) / float64(writeTotal)
+
+			if a.VictimCache != nil {
+
+				vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
+
+				var vcHitRate float64
+				var vcMissRate float64
+
+				if vcTotal > 0 {
+					vcHitRate = float64(a.VictimCache.VCHits) / float64(vcTotal)
+					vcMissRate = float64(a.VictimCache.VCMisses) / float64(vcTotal)
+				}
+
+				const VCHitPenalty = 5.0
+				const L2Penalty = MissPenalty
+
+				writeAMAT :=
+					HitTime +
+						l1MissRate*(
+						vcHitRate*VCHitPenalty +
+							vcMissRate*L2Penalty)
+
+				fmt.Printf("Write AMAT    : %.2f cycles\n", writeAMAT)
+
+			} else {
+
+				writeAMAT := HitTime + l1MissRate*MissPenalty
+				fmt.Printf("Write AMAT    : %.2f cycles\n", writeAMAT)
+			}
 		}
 
 		fmt.Println("====================================")
