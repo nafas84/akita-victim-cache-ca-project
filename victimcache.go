@@ -59,6 +59,7 @@ type vcTopTransaction struct {
 type vcPendingBottom struct {
 	BottomReqID string
 	IsWrite     bool
+	IsEviction  bool // Added to differentiate background evictions from normal write-throughs
 	OrigAddress uint64
 	ByteSize    uint64
 	OrigReqID   string
@@ -258,6 +259,7 @@ func (vc *VictimCache) handleRead(trans vcTopTransaction) bool {
 	vc.pendingBottom = append(vc.pendingBottom, vcPendingBottom{
 		BottomReqID: bottomReq.ID,
 		IsWrite:     false,
+		IsEviction:  false,
 		OrigAddress: trans.Address,
 		ByteSize:    trans.ByteSize,
 		OrigReqID:   trans.ReqID,
@@ -299,6 +301,11 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 	}
 
 	// 3. Full -> LRU replacement.
+	// Since we are replacing an old block, we must write it back to memory (DRAM).
+	if !vc.BottomPort.CanSend() {
+		return false // Stall until BottomPort can accept the eviction request
+	}
+
 	lruIdx := 0
 	minTime := vc.Blocks[0].LastAccessTime
 	for i := 1; i < len(vc.Blocks); i++ {
@@ -308,10 +315,36 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 		}
 	}
 
+	// Create and send the eviction write request to the memory level below
+	evictedTag := vc.Blocks[lruIdx].Tag
+	evictedData := make([]byte, vc.spec.BlockSize)
+	copy(evictedData, vc.Blocks[lruIdx].Data)
+
+	bottomReq := mem.WriteReqBuilder{}.
+		WithSrc(vc.BottomPort.AsRemote()).
+		WithDst(vc.LowModule).
+		WithAddress(evictedTag).
+		WithData(evictedData).
+		WithPID(vm.PID(1)).
+		Build()
+
+	vc.BottomPort.Send(bottomReq)
+	vc.BottomSendCount++
+
+	// Track the pending bottom write so we can process its response
+	vc.pendingBottom = append(vc.pendingBottom, vcPendingBottom{
+		BottomReqID: bottomReq.ID,
+		IsWrite:     true,
+		IsEviction:  true, // Mark as an eviction so we don't reply to TopPort later
+	})
+
+	// Now that eviction is in flight, overwrite the slot with the new data
 	vc.Blocks[lruIdx].Valid = true
 	vc.Blocks[lruIdx].Tag = alignedAddr
 	copy(vc.Blocks[lruIdx].Data, trans.Data)
 	vc.Blocks[lruIdx].LastAccessTime = now
+	
+	// Acknowledge the top write immediately so L1 can proceed
 	vc.ackWrite(trans)
 
 	return true
@@ -340,10 +373,7 @@ func (vc *VictimCache) processBottomResponse() bool {
 	case *mem.DataReadyRsp:
 		return vc.completeBottomRead(rsp)
 	case *mem.WriteDoneRsp:
-		// The VC currently never issues its own write-through to
-		// DRAM (see handleWrite above), so this branch should not
-		// trigger in this configuration, but it's handled for
-		// completeness / future write-through use.
+		// Handles WriteDoneRsp from DRAM after a block eviction (or write-through)
 		return vc.completeBottomWrite(rsp)
 	default:
 		panic(fmt.Sprintf("VictimCache: unsupported bottom message type %T", msgI))
@@ -400,17 +430,22 @@ func (vc *VictimCache) completeBottomWrite(rsp *mem.WriteDoneRsp) bool {
 
 	pending := vc.pendingBottom[idx]
 
-	if !vc.TopPort.CanSend() {
-		return false
+	// If it is a background eviction, there is no TopPort request to respond to.
+	// Only forward the response upward if it was initiated by a top port request.
+	if !pending.IsEviction {
+		if !vc.TopPort.CanSend() {
+			return false
+		}
+
+		topRsp := mem.WriteDoneRspBuilder{}.
+			WithSrc(vc.TopPort.AsRemote()).
+			WithDst(pending.OrigReqSrc).
+			WithRspTo(pending.OrigReqID).
+			Build()
+
+		vc.TopPort.Send(topRsp)
 	}
 
-	topRsp := mem.WriteDoneRspBuilder{}.
-		WithSrc(vc.TopPort.AsRemote()).
-		WithDst(pending.OrigReqSrc).
-		WithRspTo(pending.OrigReqID).
-		Build()
-
-	vc.TopPort.Send(topRsp)
 	vc.pendingBottom = append(vc.pendingBottom[:idx], vc.pendingBottom[idx+1:]...)
 	vc.BottomPort.RetrieveIncoming()
 
