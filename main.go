@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/sarchlab/akita/v4/mem/cache/writeback"
 	"github.com/sarchlab/akita/v4/mem/idealmemcontroller"
 	"github.com/sarchlab/akita/v4/mem/mem"
@@ -9,45 +11,54 @@ import (
 )
 
 func main() {
+	runBenchmark("Small Benchmark", false)
+    runBenchmark("Large Benchmark", true)
+}
 
-	engine := sim.NewSerialEngine()
 
-	conn := directconnection.MakeBuilder().
-		WithEngine(engine).
-		WithFreq(1 * sim.GHz).
-		Build("Conn")
+func runBenchmark(name string, large bool) {
+    fmt.Println()
+    fmt.Println("===================================")
+    fmt.Println(name)
+    fmt.Println("===================================")
 
-	dram := idealmemcontroller.MakeBuilder().
-		WithEngine(engine).
-		WithNewStorage(4 * mem.GB).
-		Build("DRAM")
+    engine := sim.NewSerialEngine()
 
-	mapper := &mem.SinglePortMapper{}
+    conn := directconnection.MakeBuilder().
+        WithEngine(engine).
+        WithFreq(1 * sim.GHz).
+        Build("Conn")
 
-	cache := writeback.MakeBuilder().
-		WithEngine(engine).
-		WithAddressToPortMapper(mapper).
-		WithByteSize(32 * mem.KB).
-		WithLog2BlockSize(6).
-		WithWayAssociativity(1).
-		WithNumMSHREntry(4).
-		Build("L1")
+    dram := idealmemcontroller.MakeBuilder().
+        WithEngine(engine).
+        WithNewStorage(64 * mem.KB).
+        Build("DRAM")
 
-	mapper.Port = dram.GetPortByName("Top").AsRemote()
+    mapper := &mem.SinglePortMapper{}
 
-	agent := NewSeqAgent(engine)
-	agent.Cache = cache
+    cache := writeback.MakeBuilder().
+        WithEngine(engine).
+        WithAddressToPortMapper(mapper).
+        WithByteSize(1 * mem.KB).
+        WithLog2BlockSize(6).
+        WithWayAssociativity(1).
+        WithNumMSHREntry(4).
+        Build("L1")
 
-	agent.LowModule = cache.GetPortByName("Top")
+    mapper.Port = dram.GetPortByName("Top").AsRemote()
 
-	conn.PlugIn(agent.GetPortByName("Mem"))
-	conn.PlugIn(cache.GetPortByName("Top"))
-	conn.PlugIn(cache.GetPortByName("Bottom"))
-	conn.PlugIn(dram.GetPortByName("Top"))
+    agent := NewSeqAgent(engine, large)
+    agent.Cache = cache
+    agent.LowModule = cache.GetPortByName("Top")
 
-	agent.TickLater()
+    conn.PlugIn(agent.GetPortByName("Mem"))
+    conn.PlugIn(cache.GetPortByName("Top"))
+    conn.PlugIn(cache.GetPortByName("Bottom"))
+    conn.PlugIn(dram.GetPortByName("Top"))
 
-	if err := engine.Run(); err != nil {
-		panic(err)
-	}
+    agent.TickLater()
+
+    if err := engine.Run(); err != nil {
+        panic(err)
+    }
 }
