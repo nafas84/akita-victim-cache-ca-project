@@ -2,527 +2,434 @@ package main
 
 import (
 	"fmt"
-	"log"
 
-	mem "github.com/sarchlab/akita/v5/mem/memprotocol"
-	"github.com/sarchlab/akita/v5/messaging"
-	"github.com/sarchlab/akita/v5/modeling"
-	"github.com/sarchlab/akita/v5/timing"
+	"github.com/sarchlab/akita/v4/mem/mem"
+	"github.com/sarchlab/akita/v4/mem/vm"
+	"github.com/sarchlab/akita/v4/sim"
 )
 
-// Eviction Message
-type EvictToVCReq struct {
-	messaging.MsgMeta
-	Address uint64
-	Data    []byte
-}
-
+// VCSpec configures a VictimCache instance.
+//
+// NOTE: BlockSize must match the block size of the cache sitting above the
+// victim cache (the L1 in this system uses Log2BlockSize=6 -> 64 bytes), or
+// address alignment between the two levels will not line up.
 type VCSpec struct {
-	Freq      timing.Freq `json:"freq"`
-	Latency   int         `json:"latency"`
-	BlockSize int         `json:"block_size"` // 16 bytes
-	NumBlocks int         `json:"num_blocks"` // 8-block Fully Associative
+	Freq      sim.Freq
+	Latency   int // extra cycles of lookup latency per top-side transaction
+	BlockSize int // must equal L1 block size (64 bytes for this system)
+	NumBlocks int // fully-associative -> total capacity = BlockSize*NumBlocks
 }
 
-var defaultVCSpec = VCSpec{
-	Freq:      1 * timing.GHz,
-	Latency:   2,
-	BlockSize: 16,
-	NumBlocks: 8,
-}
-
+// DefaultVCSpec returns a sensible default: 8 fully-associative blocks,
+// 64 bytes each (matching the L1 built in main.go), 2-cycle lookup latency.
 func DefaultVCSpec() VCSpec {
-	return defaultVCSpec
+	return VCSpec{
+		Freq:      1 * sim.GHz,
+		Latency:   2,
+		BlockSize: 64,
+		NumBlocks: 8,
+	}
 }
 
+// VCBlock is one fully-associative slot in the victim cache.
 type VCBlock struct {
-	Tag            uint64 `json:"tag"`
-	Valid          bool   `json:"valid"`
-	Data           []byte `json:"data"`
-	LastAccessTime uint64 `json:"last_access_time"` // LRU tracking
+	Tag            uint64
+	Valid          bool
+	Data           []byte
+	LastAccessTime uint64
 }
 
+// vcTopTransaction tracks an in-flight request received on the top port
+// while its artificial lookup latency counts down.
 type vcTopTransaction struct {
-	IsRead         bool                 `json:"is_read"`
-	IsWrite        bool                 `json:"is_write"`
-	IsEvict        bool                 `json:"is_evict"`
-	Address        uint64               `json:"address"`
-	AccessByteSize uint64               `json:"access_byte_size"`
-	Data           []byte               `json:"data"`
-	DirtyMask      []bool               `json:"dirty_mask"`
-	ReqID          uint64               `json:"req_id"`
-	ReqSrc         messaging.RemotePort `json:"req_src"`
-	CycleLeft      int                  `json:"cycle_left"`
+	IsRead    bool
+	IsWrite   bool
+	Address   uint64
+	ByteSize  uint64
+	Data      []byte
+	DirtyMask []bool
+	ReqID     string
+	ReqSrc    sim.RemotePort
+	CycleLeft int
 }
 
+// vcPendingBottom tracks a request the VC sent downstream (to DRAM) while
+// awaiting its response, so the response can be matched back to whichever
+// top-side request triggered it.
 type vcPendingBottom struct {
-	BottomReqID    uint64               `json:"bottom_req_id"`
-	IsWrite        bool                 `json:"is_write"`
-	OrigAddress    uint64               `json:"orig_address"`
-	AccessByteSize uint64               `json:"access_byte_size"`
-	OrigReqID      uint64               `json:"orig_req_id"`
-	OrigReqSrc     messaging.RemotePort `json:"orig_req_src"`
+	BottomReqID string
+	IsWrite     bool
+	OrigAddress uint64
+	ByteSize    uint64
+	OrigReqID   string
+	OrigReqSrc  sim.RemotePort
 }
 
-type VCState struct {
-	Blocks          []VCBlock            `json:"-"`
-	TopTransactions []vcTopTransaction   `json:"-"`
-	PendingBottom   []vcPendingBottom    `json:"-"`
-	LowModule       messaging.RemotePort `json:"-"`
+// VictimCache is a fully-associative victim cache sitting between an L1
+// cache and main memory. It implements an "exclusive" policy: a hit
+// invalidates the line in the VC (ownership moves back to L1), and any
+// dirty line evicted from L1 arrives at the VC as a normal WriteReq, which
+// the VC allocates a slot for (LRU replacement if full).
+type VictimCache struct {
+	*sim.TickingComponent
 
-	VCHits          uint64 `json:"vc_hits"`
-	VCMisses        uint64 `json:"vc_misses"`
-	EvictionRcvd    uint64 `json:"eviction_rcvd"`
-	BottomSendCount uint64 `json:"bottom_send_count"`
+	TopPort    sim.Port
+	BottomPort sim.Port
+	LowModule  sim.RemotePort // DRAM (or whatever sits below the VC)
+
+	spec   VCSpec
+	Blocks []VCBlock
+
+	topTransactions []vcTopTransaction
+	pendingBottom   []vcPendingBottom
+
+	cycleCount uint64
+
+	VCHits          uint64
+	VCMisses        uint64
+	BottomSendCount uint64
 }
 
-type VictimCache = modeling.Component[VCSpec, VCState, modeling.None]
+// NewVictimCache creates a victim cache. Wire LowModule and plug TopPort /
+// BottomPort into a connection exactly like any other akita component.
+func NewVictimCache(engine sim.Engine, spec VCSpec) *VictimCache {
+	vc := &VictimCache{spec: spec}
 
-// Builder
-type VCBuilder struct {
-	spec      VCSpec
-	registrar modeling.Registrar
-}
-
-func MakeVCBuilder() VCBuilder {
-	return VCBuilder{spec: defaultVCSpec}
-}
-
-func (b VCBuilder) WithRegistrar(reg modeling.Registrar) VCBuilder {
-	b.registrar = reg
-	return b
-}
-
-func (b VCBuilder) WithSpec(spec VCSpec) VCBuilder {
-	b.spec = spec
-	return b
-}
-
-func (b VCBuilder) Build(name string) *VictimCache {
-	if b.registrar == nil {
-		panic("VictimCache: WithRegistrar is required")
+	vc.Blocks = make([]VCBlock, spec.NumBlocks)
+	for i := range vc.Blocks {
+		vc.Blocks[i].Data = make([]byte, spec.BlockSize)
 	}
 
-	comp := modeling.NewBuilder[VCSpec, VCState, modeling.None]().
-		WithEngine(b.registrar.GetEngine()).
-		WithFreq(b.spec.Freq).
-		WithSpec(b.spec).
-		Build(name)
+	vc.TickingComponent = sim.NewTickingComponent(
+		"VictimCache", engine, spec.Freq, vc,
+	)
 
-	blocks := make([]VCBlock, b.spec.NumBlocks)
-	for i := range blocks {
-		blocks[i].Data = make([]byte, b.spec.BlockSize)
-	}
+	vc.TopPort = sim.NewPort(vc, 16, 16, "Top")
+	vc.AddPort("Top", vc.TopPort)
 
-	comp.State = VCState{
-		Blocks:          blocks,
-		TopTransactions: make([]vcTopTransaction, 0),
-		PendingBottom:   make([]vcPendingBottom, 0),
-	}
+	vc.BottomPort = sim.NewPort(vc, 16, 16, "Bottom")
+	vc.AddPort("Bottom", vc.BottomPort)
 
-	comp.AddMiddleware(&vcBottomProcessMW{comp: comp})
-	comp.AddMiddleware(&vcTopProcessMW{comp: comp})
-	comp.AddMiddleware(&vcTopReceiveMW{comp: comp})
-
-	comp.DeclarePort("TopPort")
-	topPort := modeling.MakePortBuilder().
-		WithRegistrar(b.registrar).
-		WithComponent(comp).
-		WithSpec(modeling.PortSpec{BufSize: 16}).
-		Build("TopPort")
-	comp.AssignPort("TopPort", topPort)
-
-	comp.DeclarePort("BottomPort")
-	bottomPort := modeling.MakePortBuilder().
-		WithRegistrar(b.registrar).
-		WithComponent(comp).
-		WithSpec(modeling.PortSpec{BufSize: 16}).
-		Build("BottomPort")
-	comp.AssignPort("BottomPort", bottomPort)
-
-	b.registrar.RegisterComponent(comp)
-	return comp
+	return vc
 }
 
-func vcTopPort(comp *VictimCache) messaging.Port {
-	return comp.GetPortByName("TopPort")
+// Tick implements sim.Ticker. Order mirrors SeqAgent's Tick: drain responses
+// from below first, then age in-flight top transactions, then accept a new
+// top-side request, then try to complete whichever transaction is at the
+// head of the queue.
+func (vc *VictimCache) Tick() bool {
+	progress := false
+
+	progress = vc.processBottomResponse() || progress
+	progress = vc.countDown() || progress
+	progress = vc.receiveTopRequest() || progress
+	progress = vc.processHeadTransaction() || progress
+
+	return progress
 }
 
-func vcBottomPort(comp *VictimCache) messaging.Port {
-	return comp.GetPortByName("BottomPort")
-}
-
-// -----------------------------------------------------------------
-// Middleware TopPort Receive
-// -----------------------------------------------------------------
-type vcTopReceiveMW struct {
-	comp *VictimCache
-}
-
-func (m *vcTopReceiveMW) Tick() bool {
-	madeProgress := false
-	madeProgress = m.countDown() || madeProgress
-	madeProgress = m.processInput() || madeProgress
-	return madeProgress
-}
-
-func (m *vcTopReceiveMW) countDown() bool {
-	state := &m.comp.State
-	madeProgress := false
-	for i := range state.TopTransactions {
-		if state.TopTransactions[i].CycleLeft > 0 {
-			state.TopTransactions[i].CycleLeft--
-			madeProgress = true
+func (vc *VictimCache) countDown() bool {
+	progress := false
+	for i := range vc.topTransactions {
+		if vc.topTransactions[i].CycleLeft > 0 {
+			vc.topTransactions[i].CycleLeft--
+			progress = true
 		}
 	}
-	return madeProgress
+	return progress
 }
 
-func (m *vcTopReceiveMW) processInput() bool {
-	msgI := vcTopPort(m.comp).PeekIncoming()
+func (vc *VictimCache) receiveTopRequest() bool {
+	msgI := vc.TopPort.PeekIncoming()
 	if msgI == nil {
 		return false
 	}
 
-	state := &m.comp.State
-	spec := m.comp.Spec()
-
-	switch msg := msgI.(type) {
+	switch req := msgI.(type) {
 	case *mem.ReadReq:
-		trans := vcTopTransaction{
-			IsRead:         true,
-			Address:        msg.Address,
-			AccessByteSize: msg.AccessByteSize,
-			ReqID:          msg.ID,
-			ReqSrc:         msg.Src,
-			CycleLeft:      spec.Latency,
-		}
-		state.TopTransactions = append(state.TopTransactions, trans)
-		vcTopPort(m.comp).RetrieveIncoming()
-		return true
+		vc.topTransactions = append(vc.topTransactions, vcTopTransaction{
+			IsRead:    true,
+			Address:   req.Address,
+			ByteSize:  req.AccessByteSize,
+			ReqID:     req.ID,
+			ReqSrc:    req.Src,
+			CycleLeft: vc.spec.Latency,
+		})
 	case *mem.WriteReq:
-		trans := vcTopTransaction{
+		// Every WriteReq the VC receives here is a full dirty-line
+		// eviction/writeback from the writeback L1 above it (the
+		// stock akita writeback cache never forwards partial CPU
+		// writes to the bottom port - only whole-block fetches and
+		// whole-block eviction writebacks). So this always allocates
+		// a slot, it never merely "updates if present".
+		vc.topTransactions = append(vc.topTransactions, vcTopTransaction{
 			IsWrite:   true,
-			Address:   msg.Address,
-			Data:      msg.Data,
-			DirtyMask: msg.DirtyMask,
-			ReqID:     msg.ID,
-			ReqSrc:    msg.Src,
-			CycleLeft: spec.Latency,
-		}
-		state.TopTransactions = append(state.TopTransactions, trans)
-		vcTopPort(m.comp).RetrieveIncoming()
-		return true
-	case *EvictToVCReq:
-		trans := vcTopTransaction{
-			IsEvict:   true,
-			Address:   msg.Address,
-			Data:      msg.Data,
-			CycleLeft: 1,
-		}
-		state.TopTransactions = append(state.TopTransactions, trans)
-		vcTopPort(m.comp).RetrieveIncoming()
-		return true
+			Address:   req.Address,
+			Data:      req.Data,
+			DirtyMask: req.DirtyMask,
+			ReqID:     req.ID,
+			ReqSrc:    req.Src,
+			CycleLeft: vc.spec.Latency,
+		})
 	default:
-		log.Panicf("error top port %T", msgI)
+		panic(fmt.Sprintf("VictimCache: unsupported top request type %T", msgI))
 	}
-	return false
+
+	vc.TopPort.RetrieveIncoming()
+	return true
 }
 
-// -----------------------------------------------------------------
-// Middleware TopPort Process (Exclusive Swap Engine)
-// -----------------------------------------------------------------
-type vcTopProcessMW struct {
-	comp *VictimCache
-}
-
-func (m *vcTopProcessMW) Tick() bool {
-	state := &m.comp.State
-	if len(state.TopTransactions) == 0 {
+func (vc *VictimCache) processHeadTransaction() bool {
+	if len(vc.topTransactions) == 0 {
 		return false
 	}
-	trans := state.TopTransactions[0]
+
+	trans := vc.topTransactions[0]
 	if trans.CycleLeft > 0 {
 		return false
 	}
 
-	if trans.IsEvict {
-		m.handleEviction(trans)
-		state.TopTransactions = state.TopTransactions[1:]
-		return true
-	} else if trans.IsRead {
-		if m.handleRead(trans) {
-			state.TopTransactions = state.TopTransactions[1:]
-			return true
-		}
-	} else if trans.IsWrite {
-		if m.handleWrite(trans) {
-			state.TopTransactions = state.TopTransactions[1:]
-			return true
-		}
+	var handled bool
+	if trans.IsRead {
+		handled = vc.handleRead(trans)
+	} else {
+		handled = vc.handleWrite(trans)
 	}
-	return false
+
+	if handled {
+		vc.topTransactions = vc.topTransactions[1:]
+	}
+
+	return handled
 }
 
-func (m *vcTopProcessMW) handleEviction(trans vcTopTransaction) {
-	state := &m.comp.State
-	state.EvictionRcvd++
+func (vc *VictimCache) blockMask() uint64 {
+	return uint64(vc.spec.BlockSize) - 1
+}
 
-	alignedAddr := trans.Address &^ 0xF
-	now := uint64(m.comp.CurrentTime())
+func (vc *VictimCache) handleRead(trans vcTopTransaction) bool {
+	alignedAddr := trans.Address &^ vc.blockMask()
 
-	// 1. If line already exists in VC, update it
-	for i := range state.Blocks {
-		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
-			copy(state.Blocks[i].Data, trans.Data)
-			state.Blocks[i].LastAccessTime = now
-			return
+	for i := range vc.Blocks {
+		if vc.Blocks[i].Valid && vc.Blocks[i].Tag == alignedAddr {
+			if !vc.TopPort.CanSend() {
+				return false
+			}
+
+			vc.VCHits++
+
+			// Exclusive property: once the line is handed back up to
+			// L1, the VC no longer holds a copy.
+			vc.Blocks[i].Valid = false
+
+			offset := trans.Address & vc.blockMask()
+			data := make([]byte, trans.ByteSize)
+			copy(data, vc.Blocks[i].Data[offset:offset+trans.ByteSize])
+
+			rsp := mem.DataReadyRspBuilder{}.
+				WithSrc(vc.TopPort.AsRemote()).
+				WithDst(trans.ReqSrc).
+				WithRspTo(trans.ReqID).
+				WithData(data).
+				Build()
+
+			vc.TopPort.Send(rsp)
+			return true
 		}
 	}
 
-	// 2. Place in an invalid/empty slot (e.g. the one freed by a recent VC Hit)
-	for i := range state.Blocks {
-		if !state.Blocks[i].Valid {
-			state.Blocks[i].Valid = true
-			state.Blocks[i].Tag = alignedAddr
-			copy(state.Blocks[i].Data, trans.Data)
-			state.Blocks[i].LastAccessTime = now
-			return
+	// Miss: forward to DRAM (or whatever LowModule is).
+	if !vc.BottomPort.CanSend() {
+		return false
+	}
+
+	vc.VCMisses++
+	vc.BottomSendCount++
+
+	bottomReq := mem.ReadReqBuilder{}.
+		WithSrc(vc.BottomPort.AsRemote()).
+		WithDst(vc.LowModule).
+		WithAddress(alignedAddr).
+		WithByteSize(uint64(vc.spec.BlockSize)).
+		WithPID(vm.PID(1)).
+		Build()
+
+	vc.BottomPort.Send(bottomReq)
+	vc.pendingBottom = append(vc.pendingBottom, vcPendingBottom{
+		BottomReqID: bottomReq.ID,
+		IsWrite:     false,
+		OrigAddress: trans.Address,
+		ByteSize:    trans.ByteSize,
+		OrigReqID:   trans.ReqID,
+		OrigReqSrc:  trans.ReqSrc,
+	})
+
+	return true
+}
+
+func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
+	if !vc.TopPort.CanSend() {
+		return false
+	}
+
+	alignedAddr := trans.Address &^ vc.blockMask()
+	now := vc.cycleCount
+	vc.cycleCount++
+
+	// 1. Already resident -> refresh in place.
+	for i := range vc.Blocks {
+		if vc.Blocks[i].Valid && vc.Blocks[i].Tag == alignedAddr {
+			copy(vc.Blocks[i].Data, trans.Data)
+			vc.Blocks[i].LastAccessTime = now
+			vc.ackWrite(trans)
+			return true
 		}
 	}
 
-	// 3. Fallback to LRU replacement if VC is completely full
+	// 2. Empty slot available (e.g. one freed by a prior VC hit).
+	for i := range vc.Blocks {
+		if !vc.Blocks[i].Valid {
+			vc.Blocks[i].Valid = true
+			vc.Blocks[i].Tag = alignedAddr
+			copy(vc.Blocks[i].Data, trans.Data)
+			vc.Blocks[i].LastAccessTime = now
+			vc.ackWrite(trans)
+			return true
+		}
+	}
+
+	// 3. Full -> LRU replacement.
 	lruIdx := 0
-	minTime := state.Blocks[0].LastAccessTime
-	for i := 1; i < len(state.Blocks); i++ {
-		if state.Blocks[i].LastAccessTime < minTime {
-			minTime = state.Blocks[i].LastAccessTime
+	minTime := vc.Blocks[0].LastAccessTime
+	for i := 1; i < len(vc.Blocks); i++ {
+		if vc.Blocks[i].LastAccessTime < minTime {
+			minTime = vc.Blocks[i].LastAccessTime
 			lruIdx = i
 		}
 	}
 
-	state.Blocks[lruIdx].Valid = true
-	state.Blocks[lruIdx].Tag = alignedAddr
-	copy(state.Blocks[lruIdx].Data, trans.Data)
-	state.Blocks[lruIdx].LastAccessTime = now
-}
+	vc.Blocks[lruIdx].Valid = true
+	vc.Blocks[lruIdx].Tag = alignedAddr
+	copy(vc.Blocks[lruIdx].Data, trans.Data)
+	vc.Blocks[lruIdx].LastAccessTime = now
+	vc.ackWrite(trans)
 
-func (m *vcTopProcessMW) handleRead(trans vcTopTransaction) bool {
-	state := &m.comp.State
-	alignedAddr := trans.Address &^ 0xF
-
-	// Fully Associative Lookup
-	for i := range state.Blocks {
-		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
-			if !vcTopPort(m.comp).CanSend() {
-				return false
-			}
-			state.VCHits++
-
-			// --- EXCLUSIVE SWAP MECHANISM ---
-			// Invalidate block in VC. Ownership transfers entirely to L1.
-			// L1 will send its evicted block down via EvictToVCReq to fill this slot.
-			state.Blocks[i].Valid = false
-
-			data := make([]byte, trans.AccessByteSize)
-			offset := trans.Address & 0xF
-			copy(data, state.Blocks[i].Data[offset:offset+trans.AccessByteSize])
-
-			rsp := &mem.DataReadyRsp{
-				MsgMeta: messaging.MsgMeta{
-					ID:    timing.GetIDGenerator().Generate(),
-					Src:   vcTopPort(m.comp).AsRemote(),
-					Dst:   trans.ReqSrc,
-					RspTo: trans.ReqID,
-				},
-				Data: data,
-			}
-			vcTopPort(m.comp).Send(rsp)
-			return true
-		}
-	}
-
-	if !vcBottomPort(m.comp).CanSend() {
-		return false
-	}
-	state.VCMisses++
-	state.BottomSendCount++
-
-	bottomReq := &mem.ReadReq{
-		MsgMeta: messaging.MsgMeta{
-			ID:  timing.GetIDGenerator().Generate(),
-			Src: vcBottomPort(m.comp).AsRemote(),
-			Dst: state.LowModule,
-		},
-		Address:        alignedAddr,
-		AccessByteSize: 16,
-	}
-
-	vcBottomPort(m.comp).Send(bottomReq)
-	state.PendingBottom = append(state.PendingBottom, vcPendingBottom{
-		BottomReqID:    bottomReq.ID,
-		IsWrite:        false,
-		OrigAddress:    trans.Address,
-		AccessByteSize: trans.AccessByteSize,
-		OrigReqID:      trans.ReqID,
-		OrigReqSrc:     trans.ReqSrc,
-	})
 	return true
 }
 
-func (m *vcTopProcessMW) handleWrite(trans vcTopTransaction) bool {
-	state := &m.comp.State
-	alignedAddr := trans.Address &^ 0xF
-	now := uint64(m.comp.CurrentTime())
+// ackWrite completes the eviction write-back immediately: the akita
+// writeback cache's writeBufferStage blocks waiting for a WriteDoneRsp
+// before it considers the eviction slot free, so the VC must reply.
+func (vc *VictimCache) ackWrite(trans vcTopTransaction) {
+	rsp := mem.WriteDoneRspBuilder{}.
+		WithSrc(vc.TopPort.AsRemote()).
+		WithDst(trans.ReqSrc).
+		WithRspTo(trans.ReqID).
+		Build()
 
-	if !vcBottomPort(m.comp).CanSend() {
-		return false
-	}
-
-	for i := range state.Blocks {
-		if state.Blocks[i].Valid && state.Blocks[i].Tag == alignedAddr {
-			offset := trans.Address & 0xF
-			for j := 0; j < len(trans.Data); j++ {
-				if trans.DirtyMask == nil || trans.DirtyMask[j] {
-					state.Blocks[i].Data[int(offset)+j] = trans.Data[j]
-				}
-			}
-			state.Blocks[i].LastAccessTime = now
-			break
-		}
-	}
-
-	state.BottomSendCount++
-
-	// Write-Through
-	bottomReq := &mem.WriteReq{
-		MsgMeta: messaging.MsgMeta{
-			ID:  timing.GetIDGenerator().Generate(),
-			Src: vcBottomPort(m.comp).AsRemote(),
-			Dst: state.LowModule,
-		},
-		Address:   trans.Address,
-		Data:      trans.Data,
-		DirtyMask: trans.DirtyMask,
-	}
-
-	vcBottomPort(m.comp).Send(bottomReq)
-	state.PendingBottom = append(state.PendingBottom, vcPendingBottom{
-		BottomReqID: bottomReq.ID,
-		IsWrite:     true,
-		OrigReqID:   trans.ReqID,
-		OrigReqSrc:  trans.ReqSrc,
-	})
-	return true
+	vc.TopPort.Send(rsp)
 }
 
-// -----------------------------------------------------------------
-// Middleware BottomPort
-// -----------------------------------------------------------------
-type vcBottomProcessMW struct {
-	comp *VictimCache
-}
-
-func (m *vcBottomProcessMW) Tick() bool {
-	msgI := vcBottomPort(m.comp).PeekIncoming()
+func (vc *VictimCache) processBottomResponse() bool {
+	msgI := vc.BottomPort.PeekIncoming()
 	if msgI == nil {
 		return false
 	}
-	state := &m.comp.State
 
 	switch rsp := msgI.(type) {
 	case *mem.DataReadyRsp:
-		return m.handleDataReady(rsp, state)
+		return vc.completeBottomRead(rsp)
 	case *mem.WriteDoneRsp:
-		return m.handleWriteDone(rsp, state)
+		// The VC currently never issues its own write-through to
+		// DRAM (see handleWrite above), so this branch should not
+		// trigger in this configuration, but it's handled for
+		// completeness / future write-through use.
+		return vc.completeBottomWrite(rsp)
 	default:
-		log.Panicf("error bottom port %T", msgI)
+		panic(fmt.Sprintf("VictimCache: unsupported bottom message type %T", msgI))
 	}
-	return false
 }
 
-func (m *vcBottomProcessMW) handleDataReady(rsp *mem.DataReadyRsp, state *VCState) bool {
+func (vc *VictimCache) completeBottomRead(rsp *mem.DataReadyRsp) bool {
 	idx := -1
-	for i, p := range state.PendingBottom {
-		if p.BottomReqID == rsp.RspTo {
+	for i, p := range vc.pendingBottom {
+		if p.BottomReqID == rsp.RespondTo {
 			idx = i
 			break
 		}
 	}
 	if idx == -1 {
-		log.Panicf("read without request %d", rsp.RspTo)
+		panic(fmt.Sprintf("VictimCache: DataReadyRsp for unknown request %s", rsp.RespondTo))
 	}
-	pending := state.PendingBottom[idx]
 
-	if !vcTopPort(m.comp).CanSend() {
+	pending := vc.pendingBottom[idx]
+
+	if !vc.TopPort.CanSend() {
 		return false
 	}
 
-	data := make([]byte, pending.AccessByteSize)
-	offset := pending.OrigAddress & 0xF
-	copy(data, rsp.Data[offset:offset+pending.AccessByteSize])
+	data := make([]byte, pending.ByteSize)
+	offset := pending.OrigAddress & vc.blockMask()
+	copy(data, rsp.Data[offset:offset+pending.ByteSize])
 
-	topRsp := &mem.DataReadyRsp{
-		MsgMeta: messaging.MsgMeta{
-			ID:    timing.GetIDGenerator().Generate(),
-			Src:   vcTopPort(m.comp).AsRemote(),
-			Dst:   pending.OrigReqSrc,
-			RspTo: pending.OrigReqID,
-		},
-		Data: data,
-	}
+	topRsp := mem.DataReadyRspBuilder{}.
+		WithSrc(vc.TopPort.AsRemote()).
+		WithDst(pending.OrigReqSrc).
+		WithRspTo(pending.OrigReqID).
+		WithData(data).
+		Build()
 
-	vcTopPort(m.comp).Send(topRsp)
-	state.PendingBottom = append(state.PendingBottom[:idx], state.PendingBottom[idx+1:]...)
-	vcBottomPort(m.comp).RetrieveIncoming()
+	vc.TopPort.Send(topRsp)
+	vc.pendingBottom = append(vc.pendingBottom[:idx], vc.pendingBottom[idx+1:]...)
+	vc.BottomPort.RetrieveIncoming()
+
 	return true
 }
 
-func (m *vcBottomProcessMW) handleWriteDone(rsp *mem.WriteDoneRsp, state *VCState) bool {
+func (vc *VictimCache) completeBottomWrite(rsp *mem.WriteDoneRsp) bool {
 	idx := -1
-	for i, p := range state.PendingBottom {
-		if p.BottomReqID == rsp.RspTo {
+	for i, p := range vc.pendingBottom {
+		if p.BottomReqID == rsp.RespondTo {
 			idx = i
 			break
 		}
 	}
 	if idx == -1 {
-		log.Panicf("read without request %d", rsp.RspTo)
+		panic(fmt.Sprintf("VictimCache: WriteDoneRsp for unknown request %s", rsp.RespondTo))
 	}
-	pending := state.PendingBottom[idx]
 
-	if !vcTopPort(m.comp).CanSend() {
+	pending := vc.pendingBottom[idx]
+
+	if !vc.TopPort.CanSend() {
 		return false
 	}
 
-	topRsp := &mem.WriteDoneRsp{
-		MsgMeta: messaging.MsgMeta{
-			ID:    timing.GetIDGenerator().Generate(),
-			Src:   vcTopPort(m.comp).AsRemote(),
-			Dst:   pending.OrigReqSrc,
-			RspTo: pending.OrigReqID,
-		},
-	}
+	topRsp := mem.WriteDoneRspBuilder{}.
+		WithSrc(vc.TopPort.AsRemote()).
+		WithDst(pending.OrigReqSrc).
+		WithRspTo(pending.OrigReqID).
+		Build()
 
-	vcTopPort(m.comp).Send(topRsp)
-	state.PendingBottom = append(state.PendingBottom[:idx], state.PendingBottom[idx+1:]...)
-	vcBottomPort(m.comp).RetrieveIncoming()
+	vc.TopPort.Send(topRsp)
+	vc.pendingBottom = append(vc.pendingBottom[:idx], vc.pendingBottom[idx+1:]...)
+	vc.BottomPort.RetrieveIncoming()
+
 	return true
 }
 
-func PrintVCStats(vc *VictimCache) {
-	state := &vc.State
-	fmt.Println("=====================================")
-	fmt.Println("       VICTIM CACHE STATISTICS       ")
-	fmt.Println("=====================================")
-	fmt.Printf("VC Hits:              %d\n", state.VCHits)
-	fmt.Printf("VC Misses:            %d\n", state.VCMisses)
-	fmt.Printf("Evictions Received:   %d\n", state.EvictionRcvd)
-	totalVC := state.VCHits + state.VCMisses
-	if totalVC > 0 {
-		hitRate := float64(state.VCHits) / float64(totalVC) * 100
-		fmt.Printf("VC Hit Rate:          %.2f%%\n", hitRate)
-	}
-	fmt.Printf("Traffic to Memory:    %d reqs\n", state.BottomSendCount)
-	fmt.Println("=====================================")
-}
+// PrintVCStats prints victim-cache statistics, mirroring the style of the
+// L1 stats already printed in SeqAgent.Tick.
+// func PrintVCStats(vc *VictimCache) {
+// 	fmt.Println("=====================================")
+// 	fmt.Println("       VICTIM CACHE STATISTICS       ")
+// 	fmt.Println("=====================================")
+// 	fmt.Printf("VC Hits:              %d\n", vc.VCHits)
+// 	fmt.Printf("VC Misses:            %d\n", vc.VCMisses)
+// 	total := vc.VCHits + vc.VCMisses
+// 	if total > 0 {
+// 		hitRate := float64(vc.VCHits) / float64(total) * 100
+// 		fmt.Printf("VC Hit Rate:          %.2f%%\n", hitRate)
+// 	}
+// 	fmt.Printf("Traffic to Memory:    %d reqs\n", vc.BottomSendCount)
+// 	fmt.Println("=====================================")
+// }
