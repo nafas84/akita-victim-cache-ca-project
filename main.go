@@ -11,10 +11,10 @@ import (
 )
 
 func main() {
-	//runBenchmark("Small Benchmark", false)
+	runBenchmark("Small Benchmark", false)
     runBenchmark("Large Benchmark", true)
 
-    //runBenchmarkWithVC("Small Benchmark (with Victim Cache)", false)
+    runBenchmarkWithVC("Small Benchmark (with Victim Cache)", false)
     runBenchmarkWithVC("Large Benchmark (with Victim Cache)", true)
 }
 

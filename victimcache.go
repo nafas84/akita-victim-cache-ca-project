@@ -8,20 +8,13 @@ import (
 	"github.com/sarchlab/akita/v4/sim"
 )
 
-// VCSpec configures a VictimCache instance.
-//
-// NOTE: BlockSize must match the block size of the cache sitting above the
-// victim cache (the L1 in this system uses Log2BlockSize=6 -> 64 bytes), or
-// address alignment between the two levels will not line up.
 type VCSpec struct {
 	Freq      sim.Freq
-	Latency   int // extra cycles of lookup latency per top-side transaction
-	BlockSize int // must equal L1 block size (64 bytes for this system)
-	NumBlocks int // fully-associative -> total capacity = BlockSize*NumBlocks
+	Latency   int
+	BlockSize int // Equal L1 block size
+	NumBlocks int 
 }
 
-// DefaultVCSpec returns a sensible default: 8 fully-associative blocks,
-// 64 bytes each (matching the L1 built in main.go), 2-cycle lookup latency.
 func DefaultVCSpec() VCSpec {
 	return VCSpec{
 		Freq:      1 * sim.GHz,
@@ -31,68 +24,58 @@ func DefaultVCSpec() VCSpec {
 	}
 }
 
-// VCBlock is one fully-associative slot in the victim cache.
 type VCBlock struct {
 	Tag            uint64
 	Valid          bool
 	Data           []byte
-	LastAccessTime uint64
+	LastAccessTime uint64 // LRU Replacement
 }
 
-// vcTopTransaction tracks an in-flight request received on the top port
-// while its artificial lookup latency counts down.
 type vcTopTransaction struct {
 	IsRead    bool
-	IsWrite   bool
+	IsWrite   bool // ???
 	Address   uint64
-	ByteSize  uint64
+	ByteSize  uint64 // ???
 	Data      []byte
-	DirtyMask []bool
-	ReqID     string
-	ReqSrc    sim.RemotePort
+	DirtyMask []bool // ???
+	ReqID     string // ???
+	ReqSrc    sim.RemotePort 
 	CycleLeft int
 }
 
-// vcPendingBottom tracks a request the VC sent downstream (to DRAM) while
-// awaiting its response, so the response can be matched back to whichever
-// top-side request triggered it.
 type vcPendingBottom struct {
 	BottomReqID string
+
 	IsWrite     bool
-	IsEviction  bool // Added to differentiate background evictions from normal write-throughs
+	IsEviction  bool // ???
 	OrigAddress uint64
 	ByteSize    uint64
 	OrigReqID   string
 	OrigReqSrc  sim.RemotePort
 }
 
-// VictimCache is a fully-associative victim cache sitting between an L1
-// cache and main memory. It implements an "exclusive" policy: a hit
-// invalidates the line in the VC (ownership moves back to L1), and any
-// dirty line evicted from L1 arrives at the VC as a normal WriteReq, which
-// the VC allocates a slot for (LRU replacement if full).
 type VictimCache struct {
 	*sim.TickingComponent
 
 	TopPort    sim.Port
 	BottomPort sim.Port
-	LowModule  sim.RemotePort // DRAM (or whatever sits below the VC)
+	LowModule  sim.RemotePort 
 
 	spec   VCSpec
 	Blocks []VCBlock
 
-	topTransactions []vcTopTransaction
-	pendingBottom   []vcPendingBottom
+	topTransactions []vcTopTransaction // Queue Lookup
+	pendingBottom   []vcPendingBottom // req to M.M
 
-	cycleCount uint64
+	cycleCount uint64 // ???
 
+	// Statistic
 	VCHits          uint64
 	VCMisses        uint64
 	BottomSendCount uint64
 }
 
-// NewVictimCache creates a victim cache. Wire LowModule and plug TopPort /
-// BottomPort into a connection exactly like any other akita component.
+// constructor victim cache
 func NewVictimCache(engine sim.Engine, spec VCSpec) *VictimCache {
 	vc := &VictimCache{spec: spec}
 
@@ -101,10 +84,12 @@ func NewVictimCache(engine sim.Engine, spec VCSpec) *VictimCache {
 		vc.Blocks[i].Data = make([]byte, spec.BlockSize)
 	}
 
+	// new ticking component
 	vc.TickingComponent = sim.NewTickingComponent(
 		"VictimCache", engine, spec.Freq, vc,
 	)
 
+	// vc ports
 	vc.TopPort = sim.NewPort(vc, 16, 16, "Top")
 	vc.AddPort("Top", vc.TopPort)
 
@@ -114,10 +99,7 @@ func NewVictimCache(engine sim.Engine, spec VCSpec) *VictimCache {
 	return vc
 }
 
-// Tick implements sim.Ticker. Order mirrors SeqAgent's Tick: drain responses
-// from below first, then age in-flight top transactions, then accept a new
-// top-side request, then try to complete whichever transaction is at the
-// head of the queue.
+// TickingComponent (Ticker interface)
 func (vc *VictimCache) Tick() bool {
 	progress := false
 
@@ -132,7 +114,7 @@ func (vc *VictimCache) Tick() bool {
 func (vc *VictimCache) countDown() bool {
 	progress := false
 	for i := range vc.topTransactions {
-		if vc.topTransactions[i].CycleLeft > 0 {
+		if vc.topTransactions[i].CycleLeft > 0 { // latency
 			vc.topTransactions[i].CycleLeft--
 			progress = true
 		}

@@ -54,25 +54,26 @@ func NewSeqAgent(engine sim.Engine, large bool) *SeqAgent {
 	}
 
 	smallTrace := []Access{
-    // Fill cache (16 writes)
-    {true, 0x0000},
-    {true, 0x0040},
-    {true, 0x0080},
-    {true, 0x00C0},
-    {true, 0x0100},
-    {true, 0x0140},
+    // Fill cache Write (16 misses)
+    {true, 0x0000}, // B0 L1
+    {true, 0x0040}, // B1
+    {true, 0x0080}, // B2
+    {true, 0x00C0}, // B3
+    {true, 0x0100}, // B4
+    {true, 0x0140}, // ...
     {true, 0x0180},
     {true, 0x01C0},
+
     {true, 0x0200},
     {true, 0x0240},
     {true, 0x0280},
     {true, 0x02C0},
     {true, 0x0300},
     {true, 0x0340},
-    {true, 0x0380},
-    {true, 0x03C0},
+    {true, 0x0380}, // B14
+    {true, 0x03C0}, // B15
 
-    // Read them back (mostly hits)
+    // Read them back (6 hits)
     {false, 0x0000},
     {false, 0x0040},
     {false, 0x0080},
@@ -80,45 +81,38 @@ func NewSeqAgent(engine sim.Engine, large bool) *SeqAgent {
     {false, 0x0100},
     {false, 0x0140},
 
-    // Capacity miss
+    // Evict B0 L1 (0x0000)
     {true, 0x0400},
     {false, 0x0000},
 
-    // Victim cache friendly pattern
-
-	// Evict 0x0000
+	// Evict B0 L1 (0x0000)
 	{true, 0x0400},
-	// Immediately reuse it (VC hit)
 	{false, 0x0000},
 
-	// Evict 0x0040
+	// Evict B1 L1 (0x0040)
 	{true, 0x0440},
-	// Immediately reuse it (VC hit)
 	{false, 0x0040},
 
-	// Evict 0x0080
+	// Evict B2 L1 (0x0080)
 	{true, 0x0480},
-	// Immediately reuse it (VC hit)
 	{false, 0x0080},
 
-	// Evict 0x00C0
+	// Evict B3 L1 (0x00C0)
 	{true, 0x04C0},
-	// Immediately reuse it (VC hit)
 	{false, 0x00C0},
 
-	// Evict 0x0100
+	// Evict B4 L1 (0x0100)
 	{true, 0x0500},
-	// Immediately reuse it (VC hit)
-	{false, 0x0100},
+	{false, 0x0100}, 
 
-    // Good locality again
+    // Read and Write B6, B7, B8, B9 (6 hits)
     {false, 0x0180},
     {true, 0x01C0},
     {false, 0x01C0},
     {true, 0x0200},
     {false, 0x0200},
     {false, 0x0240},
-}
+	}
 
 	largeTrace := []Access{}
 
