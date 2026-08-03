@@ -212,8 +212,7 @@ func (a *TraceCPU) Tick() bool {
         !a.hasPendingRequest() {
 
         fmt.Println()
-        fmt.Println("====================================")
-        fmt.Println("Benchmark Finished Successfully")
+        //fmt.Println("====================================")
 
         fmt.Printf("Writes         : %d\n", a.completedWrites)
         fmt.Printf("Reads          : %d\n", a.completedReads)
@@ -253,11 +252,6 @@ func (a *TraceCPU) Tick() bool {
                 )
             }
 
-            fmt.Printf(
-                "  Memory Traffic : %d requests\n",
-                a.VictimCache.BottomSendCount,
-            )
-
         } else {
 
             fmt.Println("Victim Cache")
@@ -266,13 +260,19 @@ func (a *TraceCPU) Tick() bool {
             fmt.Println("  Hit Rate     : N/A")
             fmt.Println("  Memory Traffic : N/A")
         }
+        
 
-        fmt.Println()
+        println()
 
-        // -------------------------
+        // Memory Traffic
+        if (a.VictimCache != nil) {
+            fmt.Printf("Memory Traffic : %d requests\n", a.VictimCache.BottomSendCount)
+        } else {
+             fmt.Printf("Memory Traffic : %d requests\n", a.Cache.ReadMiss + a.Cache.WriteMiss)
+        }
+        
+
         // AMAT
-        // -------------------------
-
         if totalReq > 0 {
             l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
@@ -307,7 +307,6 @@ func (a *TraceCPU) Tick() bool {
         }
 
         if totalReq > 0 {
-
             l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
             if a.VictimCache != nil {
