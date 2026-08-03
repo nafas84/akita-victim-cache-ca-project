@@ -12,7 +12,7 @@ import (
 const (
     HitTime     = 1.0
     MissPenalty = 100.0
-    VChitPenalty = 5.0
+    VCHitPenalty = 5.0
 )
 
 type Access struct {
@@ -240,7 +240,7 @@ func (a *TraceCPU) Tick() bool {
 
             vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
             vcMisses := a.VictimCache.VCMisses
-            //vcMisses := miss
+
             fmt.Println("Victim Cache")
             fmt.Printf("  Hits         : %d\n", a.VictimCache.VCHits)
             fmt.Printf("  Misses       : %d\n", vcMisses)
@@ -248,7 +248,7 @@ func (a *TraceCPU) Tick() bool {
             if vcTotal > 0 {
                 fmt.Printf(
                     "  Hit Rate     : %.2f%%\n",
-                    100*float64(a.VictimCache.VCHits + a.Cache.ReadHit)/float64(vcTotal),
+                    100*float64(a.VictimCache.VCHits)/float64(vcTotal),
                 )
             }
 
@@ -258,7 +258,6 @@ func (a *TraceCPU) Tick() bool {
             fmt.Println("  Hits         : N/A")
             fmt.Println("  Misses       : N/A")
             fmt.Println("  Hit Rate     : N/A")
-            fmt.Println("  Memory Traffic : N/A")
         }
         
 
@@ -268,7 +267,7 @@ func (a *TraceCPU) Tick() bool {
         if (a.VictimCache != nil) {
             fmt.Printf("Memory Traffic : %d requests\n", a.VictimCache.BottomSendCount)
         } else {
-             fmt.Printf("Memory Traffic : %d requests\n", a.Cache.ReadMiss + a.Cache.WriteMiss)
+            fmt.Printf("Memory Traffic : %d requests\n", a.Cache.ReadMiss + a.Cache.WriteMiss)
         }
         
 
@@ -277,7 +276,6 @@ func (a *TraceCPU) Tick() bool {
             l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
             if a.VictimCache != nil {
-
                 vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
 
                 var vcHitRate float64
@@ -288,54 +286,14 @@ func (a *TraceCPU) Tick() bool {
                     vcMissRate = float64(a.VictimCache.VCMisses) / float64(vcTotal)
                 }
 
-                const VCHitPenalty = 5.0
-                const L2Penalty = MissPenalty
+                AMAT := HitTime +
+                        l1MissRate*(vcHitRate*VCHitPenalty + vcMissRate*MissPenalty)
 
-                readAMAT :=
-                    HitTime +
-                        l1MissRate*(
-                        vcHitRate*VCHitPenalty +
-                            vcMissRate*L2Penalty)
-
-                fmt.Printf("Read AMAT     : %.2f cycles\n", readAMAT)
+                fmt.Printf("AMAT           : %.2f cycles\n", AMAT)
 
             } else {
-
-                readAMAT := HitTime + l1MissRate*MissPenalty
-                fmt.Printf("Read AMAT     : %.2f cycles\n", readAMAT)
-            }
-        }
-
-        if totalReq > 0 {
-            l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
-
-            if a.VictimCache != nil {
-
-                vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
-
-                var vcHitRate float64
-                var vcMissRate float64
-
-                if vcTotal > 0 {
-                    vcHitRate = float64(a.VictimCache.VCHits) / float64(vcTotal)
-                    vcMissRate = float64(a.VictimCache.VCMisses) / float64(vcTotal)
-                }
-
-                const VCHitPenalty = 5.0
-                const L2Penalty = MissPenalty
-
-                writeAMAT :=
-                    HitTime +
-                        l1MissRate*(
-                        vcHitRate*VCHitPenalty +
-                            vcMissRate*L2Penalty)
-
-                fmt.Printf("Write AMAT    : %.2f cycles\n", writeAMAT)
-
-            } else {
-
-                writeAMAT := HitTime + l1MissRate*MissPenalty
-                fmt.Printf("Write AMAT    : %.2f cycles\n", writeAMAT)
+                AMAT := HitTime + l1MissRate*MissPenalty
+                fmt.Printf("AMAT           : %.2f cycles\n", AMAT)
             }
         }
 
