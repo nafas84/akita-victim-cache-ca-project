@@ -1,4 +1,4 @@
-This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.5.25)  3 AUG 2026 11:48
+This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.5.25)  4 AUG 2026 01:33
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1433,27 +1433,55 @@ LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
 
  (./chapters/literature.tex
 فصل 3.
-) [5
+[5
 
 
 
 
 ]
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 48.
+
+LaTeX Font Info:    Font shape `TU/XBNiloofar(0)/m/n' will be
+(Font)              scaled to size 11.93546pt on input line 48.
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 49.
+
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 50.
+
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 51.
+
+[6] [7]) [8] [9]
 \openout2 = `chapters/implementation.aux'.
 
  (./chapters/implementation.tex
 فصل 4.
-[6
+[10
 
 
 
 
-]) [7]
+]
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 39.
+
+
+LaTeX Font Warning: Command \small invalid in math mode on input line 40.
+
+
+Underfull \hbox (badness 4096) in paragraph at lines 52--52
+[][]\TU/XBNiloofar(0)/b/n/17.28 مکانیزم جابه‌جایی دوطرفه، سیاست جایگزینی و مدیر
+یت[]
+ []
+
+[11] [12]) [13]
 \openout2 = `chapters/results.aux'.
 
  (./chapters/results.tex
 فصل 5.
-) [8
+) [14
 
 
 
@@ -1463,7 +1491,7 @@ LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
 
  (./chapters/conclusions.tex
 فصل 6.
-) [9
+) [15
 
 
 
@@ -1481,7 +1509,7 @@ LaTeX Warning: Empty `thebibliography' environment on input line 3.
 l.18 ^^I\show\refname
                      
 
-) [10
+) [16
 
 
 
@@ -1496,16 +1524,23 @@ l.18 ^^I\show\refname
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-04-28>
  ***********
-Package rerunfilecheck Info: File `thesis.out' has not changed.
-(rerunfilecheck)             Checksum: E79348B64458862FA122D3FCCBE03D0B;4246.
+
+
+Package rerunfilecheck Warning: File `thesis.out' has changed.
+(rerunfilecheck)                Rerun to get outlines right
+(rerunfilecheck)                or use package `bookmark'.
+
+Package rerunfilecheck Info: Checksums for `thesis.out':
+(rerunfilecheck)             Before: 1E2104BA077594A1867DB2E9B276B75F;5460
+(rerunfilecheck)             After:  046D3EEDF9B9B6BCDC5C2BF79E5C8999;7792.
  ) 
 Here is how much of TeX's memory you used:
- 25903 strings out of 467984
- 526917 string characters out of 5432911
- 964133 words of memory out of 5000000
- 54222 multiletter control sequences out of 15000+600000
- 634905 words of font info for 127 fonts, out of 8000000 for 9000
+ 25913 strings out of 467984
+ 527279 string characters out of 5432911
+ 968401 words of memory out of 5000000
+ 54230 multiletter control sequences out of 15000+600000
+ 634921 words of font info for 129 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191
- 93i,7n,120p,2295b,401s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 93i,7n,120p,2295b,404s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-Output written on thesis.pdf (14 pages).
+Output written on thesis.pdf (20 pages).
