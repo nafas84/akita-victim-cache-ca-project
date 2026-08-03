@@ -27,6 +27,7 @@ func DefaultVCSpec() VCSpec {
 type VCBlock struct {
 	Tag            uint64
 	Valid          bool
+	Dirty          bool
 	Data           []byte
 	LastAccessTime uint64 // LRU Replacement
 }
@@ -37,7 +38,6 @@ type vcTopTransaction struct {
 	Address   uint64
 	ByteSize  uint64 // ???
 	Data      []byte
-	DirtyMask []bool // ???
 	ReqID     string // ???
 	ReqSrc    sim.RemotePort 
 	CycleLeft int
@@ -143,7 +143,6 @@ func (vc *VictimCache) receiveTopRequest() bool {
 			IsWrite:   true,
 			Address:   req.Address,
 			Data:      req.Data,
-			DirtyMask: req.DirtyMask,
 			ReqID:     req.ID,
 			ReqSrc:    req.Src,
 			CycleLeft: vc.spec.Latency,
@@ -194,10 +193,13 @@ func (vc *VictimCache) handleRead(trans vcTopTransaction) bool {
 			}
 
 			vc.VCHits++
+			vc.Blocks[i].LastAccessTime = vc.cycleCount
+			vc.cycleCount++
 
 			// Exclusive property: once the line is handed back up to
 			// L1, the VC no longer holds a copy.
 			vc.Blocks[i].Valid = false
+			vc.Blocks[i].Dirty = false
 
 			offset := trans.Address & vc.blockMask()
 			data := make([]byte, trans.ByteSize)
@@ -258,6 +260,7 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 	for i := range vc.Blocks {
 		if vc.Blocks[i].Valid && vc.Blocks[i].Tag == alignedAddr {
 			copy(vc.Blocks[i].Data, trans.Data)
+			vc.Blocks[i].Dirty = true
 			vc.Blocks[i].LastAccessTime = now
 			vc.ackWrite(trans)
 			return true
@@ -270,6 +273,7 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 			vc.Blocks[i].Valid = true
 			vc.Blocks[i].Tag = alignedAddr
 			copy(vc.Blocks[i].Data, trans.Data)
+			vc.Blocks[i].Dirty = true
 			vc.Blocks[i].LastAccessTime = now
 			vc.ackWrite(trans)
 			return true
@@ -278,9 +282,6 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 
 	// 3. Full -> LRU replacement.
 	// Since we are replacing an old block, we must write it back to memory (DRAM).
-	if !vc.BottomPort.CanSend() {
-		return false // Stall until BottomPort can accept the eviction request
-	}
 
 	lruIdx := 0
 	minTime := vc.Blocks[0].LastAccessTime
@@ -291,32 +292,41 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 		}
 	}
 
+	if vc.Blocks[lruIdx].Dirty {
+		if !vc.BottomPort.CanSend() {
+			return false // Stall until BottomPort can accept the eviction request
+		}
+
 	// Create and send the eviction write request to the memory level below
-	evictedTag := vc.Blocks[lruIdx].Tag
-	evictedData := make([]byte, vc.spec.BlockSize)
-	copy(evictedData, vc.Blocks[lruIdx].Data)
+		evictedTag := vc.Blocks[lruIdx].Tag
+		evictedData := make([]byte, vc.spec.BlockSize)
+		copy(evictedData, vc.Blocks[lruIdx].Data)
 
-	bottomReq := mem.WriteReqBuilder{}.
-		WithSrc(vc.BottomPort.AsRemote()).
-		WithDst(vc.LowModule).
-		WithAddress(evictedTag).
-		WithData(evictedData).
-		WithPID(vm.PID(1)).
-		Build()
 
-	vc.BottomPort.Send(bottomReq)
-	vc.BottomSendCount++
 
-	// Track the pending bottom write so we can process its response
-	vc.pendingBottom = append(vc.pendingBottom, vcPendingBottom{
-		BottomReqID: bottomReq.ID,
-		IsWrite:     true,
-		IsEviction:  true, // Mark as an eviction so we don't reply to TopPort later
-	})
+		bottomReq := mem.WriteReqBuilder{}.
+			WithSrc(vc.BottomPort.AsRemote()).
+			WithDst(vc.LowModule).
+			WithAddress(evictedTag).
+			WithData(evictedData).
+			WithPID(vm.PID(1)).
+			Build()
+
+		vc.BottomPort.Send(bottomReq)
+		vc.BottomSendCount++
+
+		// Track the pending bottom write so we can process its response
+		vc.pendingBottom = append(vc.pendingBottom, vcPendingBottom{
+			BottomReqID: bottomReq.ID,
+			IsWrite:     true,
+			IsEviction:  true, // Mark as an eviction so we don't reply to TopPort later
+		})
+	}
 
 	// Now that eviction is in flight, overwrite the slot with the new data
 	vc.Blocks[lruIdx].Valid = true
 	vc.Blocks[lruIdx].Tag = alignedAddr
+	vc.Blocks[lruIdx].Dirty = true
 	copy(vc.Blocks[lruIdx].Data, trans.Data)
 	vc.Blocks[lruIdx].LastAccessTime = now
 	
