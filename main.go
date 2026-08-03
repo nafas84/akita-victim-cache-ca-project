@@ -50,7 +50,7 @@ func runBenchmark(name string, large bool) {
 
     mapper.Port = dram.GetPortByName("Top").AsRemote()
 
-    agent := NewSeqAgent(engine, large)
+    agent := NewTraceCPU(engine, large)
     agent.Cache = cache
     agent.LowModule = cache.GetPortByName("Top")
 
@@ -107,7 +107,7 @@ func runBenchmarkWithVC(name string, large bool) {
     // to DRAM.
     mapper.Port = vc.TopPort.AsRemote()
 
-    agent := NewSeqAgent(engine, large)
+    agent := NewTraceCPU(engine, large)
     agent.Cache = cache
     agent.VictimCache = vc
     agent.LowModule = cache.GetPortByName("Top")
