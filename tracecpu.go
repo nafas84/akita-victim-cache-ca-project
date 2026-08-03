@@ -57,10 +57,11 @@ type TraceCPU struct {
 	VictimCache *VictimCache
 }
 
-func NewTraceCPU(engine sim.Engine, large bool, l1Lat, vcLat, memLat float64) *TraceCPU {
+func NewTraceCPU(engine sim.Engine, specCPU CPUSpec, large bool, l1Lat, vcLat, memLat float64) *TraceCPU {
 
 	a := &TraceCPU{
 		engine:        engine,
+        specCPU:       specCPU,
 		L1Latency:     l1Lat,
 		VCLatency:     vcLat,
 		MemoryLatency: memLat,
@@ -197,7 +198,6 @@ func (a *TraceCPU) Tick() bool {
 
 	if a.totalWrites == 0 && a.totalReads == 0 && !a.hasPendingRequest() {
 
-		fmt.Println()
 		fmt.Printf("Writes         : %d\n", a.completedWrites)
 		fmt.Printf("Reads          : %d\n", a.completedReads)
 		fmt.Println()
@@ -246,7 +246,6 @@ func (a *TraceCPU) Tick() bool {
 
         // Memory Traffic
 		fmt.Printf("Memory Traffic : %d requests\n", memTraffic)
-		fmt.Println()
 
 		// AMAT
 		if totalReq > 0 {
@@ -278,7 +277,7 @@ func (a *TraceCPU) Tick() bool {
         freqInHz := float64(a.specCPU.Freq)
 		execCycles := execTimeSec * freqInHz
 		
-		fmt.Println()
+        // Execution Time
 		fmt.Printf("Execution Time : %.0f cycles (%.9f s)\n", execCycles, execTimeSec)
 		fmt.Println("===================================")
 

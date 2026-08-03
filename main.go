@@ -25,7 +25,7 @@ func main() {
 }
 
 func runBenchmark(name string, large bool) {
-	fmt.Println()
+	//fmt.Println()
 	fmt.Println("===================================")
 	fmt.Println(name)
 	fmt.Println("===================================")
@@ -58,7 +58,7 @@ func runBenchmark(name string, large bool) {
 
 	mapper.Port = memory.GetPortByName("Top").AsRemote()
 
-	agent := NewTraceCPU(engine, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
+	agent := NewTraceCPU(engine, DefaultCPUSpec, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
 	agent.Cache = cache
 	agent.LowModule = cache.GetPortByName("Top")
 
@@ -75,8 +75,8 @@ func runBenchmark(name string, large bool) {
 }
 
 func runBenchmarkWithVC(name string, large bool) {
-	fmt.Println()
-	fmt.Println("===================================")
+	//fmt.Println()
+	//fmt.Println("===================================")
 	fmt.Println(name)
 	fmt.Println("===================================")
 
@@ -114,7 +114,7 @@ func runBenchmarkWithVC(name string, large bool) {
 
 	mapper.Port = vc.TopPort.AsRemote()
 
-	agent := NewTraceCPU(engine, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
+	agent := NewTraceCPU(engine, DefaultCPUSpec, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
 	agent.Cache = cache
 	agent.VictimCache = vc
 	agent.LowModule = cache.GetPortByName("Top")
