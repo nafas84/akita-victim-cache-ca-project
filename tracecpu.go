@@ -145,15 +145,22 @@ func NewTraceCPU(engine sim.Engine, specCPU CPUSpec, large bool, l1Lat, vcLat, m
 		for i := 0; i < 10; i++ {
 			largeTrace = append(largeTrace,
 				Access{true, 0x0000}, Access{false, 0x0400},
-				Access{true, 0x0800}, Access{false, 0x0C00},
+				Access{true, 0x0440}, Access{false, 0x0040},
 			)
 		}
-		largeTrace = append(largeTrace,
-			Access{false, 0x0140}, Access{true, 0x0180},
-			Access{false, 0x01C0}, Access{true, 0x0200},
-			Access{false, 0x0240}, Access{true, 0x0280},
-			Access{false, 0x02C0}, Access{true, 0x0300},
-		)
+
+		for i := 0; i < 10; i++ {
+			largeTrace = append(largeTrace,
+				Access{true, 0x0480}, Access{false, 0x0080},
+				Access{true, 0x04C0}, Access{false, 0x00C0},
+			)
+		}
+		//largeTrace = append(largeTrace,
+		//	Access{false, 0x0140}, Access{true, 0x0180},
+		//	Access{false, 0x01C0}, Access{true, 0x0200},
+		//	Access{false, 0x0240}, Access{true, 0x0280},
+		//	Access{false, 0x02C0}, Access{true, 0x0300},
+		//)
 	}
 
 	if large {
@@ -231,8 +238,8 @@ func (a *TraceCPU) Tick() bool {
 				fmt.Printf("  Hit Rate     : %.2f%%\n", 100*float64(a.VictimCache.VCHits)/float64(vcTotal))
 			}
 
-			//memTraffic = a.VictimCache.BottomSendCount
-            memTraffic = a.VictimCache.VCMisses
+			memTraffic = a.VictimCache.BottomSendCount
+            //memTraffic = a.VictimCache.VCMisses
 
 		} else {
 			fmt.Println("Victim Cache")
@@ -268,7 +275,7 @@ func (a *TraceCPU) Tick() bool {
 				fmt.Printf("Theoretical AMAT : %.2f cycles\n", TheoreticalAMAT)
 			}
 
-			// 2. Practical
+			// Practical
 			SimulatedAMAT := a.totalAccessLatency / float64(totalReq)
 			fmt.Printf("Simulated AMAT   : %.2f cycles\n", SimulatedAMAT)
 		}

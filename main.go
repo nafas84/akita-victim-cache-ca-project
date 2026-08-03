@@ -51,23 +51,23 @@ func runBenchmark(name string, large bool) {
 		WithByteSize(1 * mem.KB).
 		WithLog2BlockSize(6).
 		WithWayAssociativity(1).
-		//WithNumMSHREntry(4).
+		WithNumMSHREntry(4).
         WithDirectoryLatency(L1_LATENCY/2).
         WithBankLatency(L1_LATENCY/2).
 		Build("L1")
 
 	mapper.Port = memory.GetPortByName("Top").AsRemote()
 
-	agent := NewTraceCPU(engine, DefaultCPUSpec, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
-	agent.Cache = cache
-	agent.LowModule = cache.GetPortByName("Top")
+	cpu := NewTraceCPU(engine, DefaultCPUSpec, large, float64(L1_LATENCY), float64(VC_LATENCY), float64(MEM_LATENCY))
+	cpu.Cache = cache
+	cpu.LowModule = cache.GetPortByName("Top")
 
-	conn.PlugIn(agent.GetPortByName("Mem"))
+	conn.PlugIn(cpu.GetPortByName("Mem"))
 	conn.PlugIn(cache.GetPortByName("Top"))
 	conn.PlugIn(cache.GetPortByName("Bottom"))
 	conn.PlugIn(memory.GetPortByName("Top"))
 
-	agent.TickLater()
+	cpu.TickLater()
 
 	if err := engine.Run(); err != nil {
 		panic(err)

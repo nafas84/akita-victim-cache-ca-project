@@ -139,12 +139,6 @@ func (vc *VictimCache) receiveTopRequest() bool {
 			CycleLeft: vc.spec.Latency,
 		})
 	case *mem.WriteReq:
-		// Every WriteReq the VC receives here is a full dirty-line
-		// eviction/writeback from the writeback L1 above it (the
-		// stock akita writeback cache never forwards partial CPU
-		// writes to the bottom port - only whole-block fetches and
-		// whole-block eviction writebacks). So this always allocates
-		// a slot, it never merely "updates if present".
 		vc.topTransactions = append(vc.topTransactions, vcTopTransaction{
 			IsWrite:   true,
 			Address:   req.Address,
@@ -332,9 +326,6 @@ func (vc *VictimCache) handleWrite(trans vcTopTransaction) bool {
 	return true
 }
 
-// ackWrite completes the eviction write-back immediately: the akita
-// writeback cache's writeBufferStage blocks waiting for a WriteDoneRsp
-// before it considers the eviction slot free, so the VC must reply.
 func (vc *VictimCache) ackWrite(trans vcTopTransaction) {
 	rsp := mem.WriteDoneRspBuilder{}.
 		WithSrc(vc.TopPort.AsRemote()).
@@ -433,20 +424,3 @@ func (vc *VictimCache) completeBottomWrite(rsp *mem.WriteDoneRsp) bool {
 
 	return true
 }
-
-// PrintVCStats prints victim-cache statistics, mirroring the style of the
-// L1 stats already printed in SeqAgent.Tick.
-// func PrintVCStats(vc *VictimCache) {
-// 	fmt.Println("=====================================")
-// 	fmt.Println("       VICTIM CACHE STATISTICS       ")
-// 	fmt.Println("=====================================")
-// 	fmt.Printf("VC Hits:              %d\n", vc.VCHits)
-// 	fmt.Printf("VC Misses:            %d\n", vc.VCMisses)
-// 	total := vc.VCHits + vc.VCMisses
-// 	if total > 0 {
-// 		hitRate := float64(vc.VCHits) / float64(total) * 100
-// 		fmt.Printf("VC Hit Rate:          %.2f%%\n", hitRate)
-// 	}
-// 	fmt.Printf("Traffic to Memory:    %d reqs\n", vc.BottomSendCount)
-// 	fmt.Println("=====================================")
-// }
