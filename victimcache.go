@@ -18,7 +18,7 @@ type VCSpec struct {
 func DefaultVCSpec() VCSpec {
 	return VCSpec{
 		Freq:      1 * sim.GHz,
-		Latency:   2,
+		Latency:   5,
 		BlockSize: 64,
 		NumBlocks: 8,
 	}
