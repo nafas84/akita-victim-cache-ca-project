@@ -226,23 +226,13 @@ func (a *TraceCPU) Tick() bool {
         fmt.Printf("  Write Hits   : %d\n", a.Cache.WriteHit)
         fmt.Printf("  Write Misses : %d\n", a.Cache.WriteMiss)
 
-        fmt.Printf("  Evictions    : %d\n", a.Cache.Evictions)
         fmt.Printf("  WriteBacks   : %d\n", a.Cache.WriteBack)
 
-        readTotal := a.Cache.ReadHit + a.Cache.ReadMiss
-        if readTotal > 0 {
-            fmt.Printf(
-                "  Read Hit Rate : %.2f%%\n",
-                100*float64(a.Cache.ReadHit)/float64(readTotal),
-            )
-        }
+        totalReq := a.completedReads + a.completedWrites
+        if totalReq > 0 {
+            l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
-        writeTotal := a.Cache.WriteHit + a.Cache.WriteMiss
-        if writeTotal > 0 {
-            fmt.Printf(
-                "  Write Hit Rate: %.2f%%\n",
-                100*float64(a.Cache.WriteHit)/float64(writeTotal),
-            )
+            fmt.Printf("  Hit Rate : %.2f%%\n", 100*(1-l1MissRate))
         }
 
         fmt.Println()
@@ -250,7 +240,8 @@ func (a *TraceCPU) Tick() bool {
         if a.VictimCache != nil {
 
             vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
-            vcMisses := a.Cache.ReadMiss - a.VictimCache.VCHits
+            vcMisses := a.VictimCache.VCMisses
+            //vcMisses := miss
             fmt.Println("Victim Cache")
             fmt.Printf("  Hits         : %d\n", a.VictimCache.VCHits)
             fmt.Printf("  Misses       : %d\n", vcMisses)
@@ -258,7 +249,7 @@ func (a *TraceCPU) Tick() bool {
             if vcTotal > 0 {
                 fmt.Printf(
                     "  Hit Rate     : %.2f%%\n",
-                    100*float64(a.VictimCache.VCHits + a.Cache.ReadHit)/float64(readTotal),
+                    100*float64(a.VictimCache.VCHits + a.Cache.ReadHit)/float64(vcTotal),
                 )
             }
 
@@ -282,10 +273,9 @@ func (a *TraceCPU) Tick() bool {
         // AMAT
         // -------------------------
 
-        if readTotal > 0 {
+        if totalReq > 0 {
+            l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
-            l1MissRate := float64(a.Cache.ReadMiss) / float64(readTotal)
-            
             if a.VictimCache != nil {
 
                 vcTotal := a.VictimCache.VCHits + a.VictimCache.VCMisses
@@ -316,9 +306,9 @@ func (a *TraceCPU) Tick() bool {
             }
         }
 
-        if writeTotal > 0 {
+        if totalReq > 0 {
 
-            l1MissRate := float64(a.Cache.WriteMiss) / float64(writeTotal)
+            l1MissRate := float64(a.Cache.ReadMiss + a.Cache.WriteMiss) / float64(totalReq)
 
             if a.VictimCache != nil {
 
