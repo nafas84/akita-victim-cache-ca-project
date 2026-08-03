@@ -11,11 +11,11 @@ import (
 )
 
 func main() {
-	runBenchmark("Small Benchmark", false)
-    runBenchmark("Large Benchmark", true)
+	runBenchmark("Test 1", false)
+    runBenchmarkWithVC("Test 1 (with Victim Cache)", false)
 
-    runBenchmarkWithVC("Small Benchmark (with Victim Cache)", false)
-    runBenchmarkWithVC("Large Benchmark (with Victim Cache)", true)
+    runBenchmark("Test 2", true)
+    runBenchmarkWithVC("Test 2 (with Victim Cache)", true)
 }
 
 
@@ -32,10 +32,10 @@ func runBenchmark(name string, large bool) {
         WithFreq(1 * sim.GHz).
         Build("Conn")
 
-    dram := idealmemcontroller.MakeBuilder().
+    memory := idealmemcontroller.MakeBuilder().
         WithEngine(engine).
         WithNewStorage(64 * mem.KB).
-        Build("DRAM")
+        Build("Memory")
 
     mapper := &mem.SinglePortMapper{}
 
@@ -48,7 +48,7 @@ func runBenchmark(name string, large bool) {
         WithNumMSHREntry(4).
         Build("L1")
 
-    mapper.Port = dram.GetPortByName("Top").AsRemote()
+    mapper.Port = memory.GetPortByName("Top").AsRemote()
 
     agent := NewTraceCPU(engine, large)
     agent.Cache = cache
@@ -57,7 +57,7 @@ func runBenchmark(name string, large bool) {
     conn.PlugIn(agent.GetPortByName("Mem"))
     conn.PlugIn(cache.GetPortByName("Top"))
     conn.PlugIn(cache.GetPortByName("Bottom"))
-    conn.PlugIn(dram.GetPortByName("Top"))
+    conn.PlugIn(memory.GetPortByName("Top"))
 
     agent.TickLater()
 
@@ -66,8 +66,6 @@ func runBenchmark(name string, large bool) {
     }
 }
 
-// runBenchmarkWithVC is identical to runBenchmark, except a VictimCache is
-// inserted between the L1 and DRAM: CPU (SeqAgent) -> L1 -> VictimCache -> DRAM.
 func runBenchmarkWithVC(name string, large bool) {
     fmt.Println()
     fmt.Println("===================================")
@@ -81,10 +79,10 @@ func runBenchmarkWithVC(name string, large bool) {
         WithFreq(1 * sim.GHz).
         Build("Conn")
 
-    dram := idealmemcontroller.MakeBuilder().
+    memory := idealmemcontroller.MakeBuilder().
         WithEngine(engine).
         WithNewStorage(64 * mem.KB).
-        Build("DRAM")
+        Build("Memory")
 
     mapper := &mem.SinglePortMapper{}
 
@@ -97,14 +95,9 @@ func runBenchmarkWithVC(name string, large bool) {
         WithNumMSHREntry(4).
         Build("L1")
 
-    // Victim cache sits below the L1. Its block size must match the L1's
-    // block size (64 bytes, i.e. Log2BlockSize=6), which is what
-    // DefaultVCSpec() already provides.
     vc := NewVictimCache(engine, DefaultVCSpec())
-    vc.LowModule = dram.GetPortByName("Top").AsRemote()
+    vc.LowModule = memory.GetPortByName("Top").AsRemote()
 
-    // L1 misses / evictions now go to the victim cache instead of straight
-    // to DRAM.
     mapper.Port = vc.TopPort.AsRemote()
 
     agent := NewTraceCPU(engine, large)
@@ -117,7 +110,7 @@ func runBenchmarkWithVC(name string, large bool) {
     conn.PlugIn(cache.GetPortByName("Bottom"))
     conn.PlugIn(vc.TopPort)
     conn.PlugIn(vc.BottomPort)
-    conn.PlugIn(dram.GetPortByName("Top"))
+    conn.PlugIn(memory.GetPortByName("Top"))
 
     agent.TickLater()
 
