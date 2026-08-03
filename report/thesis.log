@@ -1,4 +1,4 @@
-This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.5.25)  31 JUL 2026 00:42
+This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.5.25)  3 AUG 2026 11:48
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1422,13 +1422,13 @@ LaTeX Font Info:    Font shape `TU/XBNiloofar(0)/b/n' will be
 LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
 (Font)              scaled to size 18.83513pt on input line 5.
 LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
-(Font)              scaled to size 15.69594pt on input line 13.
-) [3
+(Font)              scaled to size 15.69594pt on input line 12.
+[3
 
 
 
 
-] [4]
+]) [4]
 \openout2 = `chapters/literature.aux'.
 
  (./chapters/literature.tex
@@ -1443,17 +1443,17 @@ LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
 
  (./chapters/implementation.tex
 فصل 4.
-) [6
+[6
 
 
 
 
-]
+]) [7]
 \openout2 = `chapters/results.aux'.
 
  (./chapters/results.tex
 فصل 5.
-) [7
+) [8
 
 
 
@@ -1463,7 +1463,7 @@ LaTeX Font Info:    Font shape `TU/XBNiloofar(1)/b/n' will be
 
  (./chapters/conclusions.tex
 فصل 6.
-) [8
+) [9
 
 
 
@@ -1481,7 +1481,7 @@ LaTeX Warning: Empty `thebibliography' environment on input line 3.
 l.18 ^^I\show\refname
                      
 
-) [9
+) [10
 
 
 
@@ -1502,10 +1502,10 @@ Package rerunfilecheck Info: File `thesis.out' has not changed.
 Here is how much of TeX's memory you used:
  25903 strings out of 467984
  526917 string characters out of 5432911
- 964129 words of memory out of 5000000
+ 964133 words of memory out of 5000000
  54222 multiletter control sequences out of 15000+600000
  634905 words of font info for 127 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191
  93i,7n,120p,2295b,401s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-Output written on thesis.pdf (13 pages).
+Output written on thesis.pdf (14 pages).

@@ -2,17 +2,17 @@
 \contentsline {chapter}{\numberline {2}مفاهیم پایه و پیش‌زمینه}{3}{chapter.2}%
 \contentsline {section}{\numberline {2-1}سلسله مراتب حافظه}{3}{section.2.1}%
 \contentsline {section}{\numberline {2-2}انواع نقصان در حافظهٔ نهان}{3}{section.2.2}%
-\contentsline {subsection}{\numberline {2-2-1}نقصان اجباری}{3}{subsection.2.2.1}%
-\contentsline {subsection}{\numberline {2-2-2}نقصان ظرفیتی}{3}{subsection.2.2.2}%
+\contentsline {subsection}{\numberline {2-2-1}نقصان اجباری}{4}{subsection.2.2.1}%
+\contentsline {subsection}{\numberline {2-2-2}نقصان ظرفیتی}{4}{subsection.2.2.2}%
 \contentsline {subsection}{\numberline {2-2-3}نقصان برخورد}{4}{subsection.2.2.3}%
 \contentsline {chapter}{\numberline {3}ساختار پایه و شبیه‌سازی وضعیت تلاطم}{5}{chapter.3}%
 \contentsline {section}{\numberline {3-1}معماری پایه در شبیه‌ساز آکیتا}{5}{section.3.1}%
 \contentsline {section}{\numberline {3-2}برنامهٔ محک و ایجاد تلاطم}{5}{section.3.2}%
 \contentsline {chapter}{\numberline {4}طراحی و معماری حافظهٔ نهان قربانی}{6}{chapter.4}%
 \contentsline {section}{\numberline {4-1}ساختار تمام‌انجمنی و سیاست جایگزینی}{6}{section.4.1}%
-\contentsline {section}{\numberline {4-2}مکانیزم تبادل دوطرفه و مسیریابی پیام‌ها}{6}{section.4.2}%
-\contentsline {chapter}{\numberline {5}ارزیابی و تحلیل نتایج شبیه‌سازی}{7}{chapter.5}%
-\contentsline {section}{\numberline {5-1}مقایسهٔ ترافیک حافظه و تاخیر سامانه}{7}{section.5.1}%
-\contentsline {section}{\numberline {5-2}تحلیل ریاضی زمان دسترسی میانگین}{7}{section.5.2}%
-\contentsline {chapter}{\numberline {6}نتیجه‌گیری}{8}{chapter.6}%
-\contentsline {chapter}{مراجع}{9}{section*.2}%
+\contentsline {section}{\numberline {4-2}مکانیزم تبادل دوطرفه و مسیریابی پیام‌ها}{7}{section.4.2}%
+\contentsline {chapter}{\numberline {5}ارزیابی و تحلیل نتایج شبیه‌سازی}{8}{chapter.5}%
+\contentsline {section}{\numberline {5-1}مقایسهٔ ترافیک حافظه و تاخیر سامانه}{8}{section.5.1}%
+\contentsline {section}{\numberline {5-2}تحلیل ریاضی زمان دسترسی میانگین}{8}{section.5.2}%
+\contentsline {chapter}{\numberline {6}نتیجه‌گیری}{9}{chapter.6}%
+\contentsline {chapter}{مراجع}{10}{section*.2}%
