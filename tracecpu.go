@@ -231,7 +231,8 @@ func (a *TraceCPU) Tick() bool {
 				fmt.Printf("  Hit Rate     : %.2f%%\n", 100*float64(a.VictimCache.VCHits)/float64(vcTotal))
 			}
 
-			memTraffic = a.VictimCache.BottomSendCount
+			//memTraffic = a.VictimCache.BottomSendCount
+            memTraffic = a.VictimCache.VCMisses
 
 		} else {
 			fmt.Println("Victim Cache")

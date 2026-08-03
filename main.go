@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	L1_LATENCY  = 1
-	VC_LATENCY  = 5
-	MEM_LATENCY = 100
+	L1_LATENCY  = 1   // Hit Time
+	VC_LATENCY  = 5   // PenaltyVC
+	MEM_LATENCY = 100 // MissPenaltyL1
 )
 
 func main() {
 	runBenchmark("Test 1", false)
 	runBenchmarkWithVC("Test 1 (with Victim Cache)", false)
 
-	//runBenchmark("Test 2", true)
-	//runBenchmarkWithVC("Test 2 (with Victim Cache)", true)
+	runBenchmark("Test 2", true)
+	runBenchmarkWithVC("Test 2 (with Victim Cache)", true)
 }
 
 func runBenchmark(name string, large bool) {
@@ -51,7 +51,7 @@ func runBenchmark(name string, large bool) {
 		WithByteSize(1 * mem.KB).
 		WithLog2BlockSize(6).
 		WithWayAssociativity(1).
-		WithNumMSHREntry(4).
+		//WithNumMSHREntry(4).
         WithDirectoryLatency(L1_LATENCY/2).
         WithBankLatency(L1_LATENCY/2).
 		Build("L1")
