@@ -1,0 +1,46 @@
+\begin{thebibliography}{1}
+
+\bibitem{wikipediaMemoryHierarchy}
+{Wikipedia}.
+\newblock Memory hierarchy.
+\newblock \url{https://en.wikipedia.org/wiki/Memory_hierarchy}.
+\newblock Accessed: 2026-08-05.
+
+\bibitem{geeksForGeeksMiss}
+{GeeksforGeeks}.
+\newblock Types of cache misses.
+\newblock
+  \url{https://www.geeksforgeeks.org/computer-organization-architecture/types-of-cache-misses/}.
+\newblock Accessed: 2026-08-05.
+
+\bibitem{jouppi1990}
+N.~P. Jouppi.
+\newblock Improving direct-mapped cache performance by the addition of a small
+  fully-associative cache and prefetch buffers.
+\newblock In {\em Proceedings of the 17th Annual International Symposium on
+  Computer Architecture}, pages 364--373, 1990.
+
+\bibitem{akita}
+{Scalable Architecture Lab}.
+\newblock Project akita.
+\newblock \url{https://sarchlab.org/akita}.
+\newblock Accessed: 2026-08-05.
+
+\bibitem{chang2015}
+L.-Y. Chang, C.-H. Suo, and Y.-Y. Liu.
+\newblock Counter-based victim cache hit rate optimization.
+\newblock In {\em SASIMI 2015 Proceedings}, pages 317--318, 2015.
+
+\bibitem{wikipediaVictimCache}
+{Wikipedia}.
+\newblock Victim cache.
+\newblock \url{https://en.wikipedia.org/wiki/Victim_cache}.
+\newblock Accessed: 2026-08-05.
+
+\bibitem{wikipediaAMAT}
+{Wikipedia}.
+\newblock Average memory access time.
+\newblock \url{https://en.wikipedia.org/wiki/Average_memory_access_time}.
+\newblock Accessed: 2026-08-05.
+
+\end{thebibliography}
