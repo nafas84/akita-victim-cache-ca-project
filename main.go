@@ -131,6 +131,4 @@ func runBenchmarkWithVC(name string, large bool) {
 	if err := engine.Run(); err != nil {
 		panic(err)
 	}
-
-	//PrintVCStats(vc)
 }
